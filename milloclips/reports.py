@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
+from .editing import short_candidates
 from .io import format_time, read_json
 
 
@@ -51,7 +52,7 @@ def scan_report(vod_dir: Path) -> Path:
 
 
 def shorts_report(vod_dir: Path) -> Path:
-    candidates = read_json(vod_dir / "short-candidates.json")["candidates"]
+    candidates = short_candidates(vod_dir)
     cards = [
         f"""<article class="card"><h2>{html.escape(item['title'])}</h2><div class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])}</div><p>{html.escape(item['reason'])}</p><span class="badge">score {item['score']}</span></article>"""
         for item in candidates

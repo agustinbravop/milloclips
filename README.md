@@ -6,7 +6,7 @@ coherent League of Legends video and vertical shorts.
 Iteration 0 deliberately uses cheap models and plain edits. It must produce:
 
 - a static report of detected League games;
-- a 10-minute horizontal rough cut from one selected game;
+- a 9-12 minute horizontal rough cut from one selected game;
 - a static report of short candidates;
 - one 1080x1920 short with facecam above gameplay.
 

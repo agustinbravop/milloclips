@@ -27,10 +27,14 @@ workspace/<vod-id>/
   games.reviewed.json      optional human corrections
   selection.json           selected game id
   transcript.json          selected-game timestamped words
-  beats.json               classified 20-second editorial units
+  transcript.reviewed.json optional exclusion ranges for known bad transcription
+  pregame-transcript.json  cached champion-select transcription when available
+  beats.json               variable editorial units split near speech pauses
   long-plan.json           horizontal source intervals
   short-candidates.json    ranked short intervals
+  short-candidates.reviewed.json optional human-selected exact boundaries
   layout.json              normalized facecam crop
+  layout.reviewed.json     optional human-corrected facecam crop
   reports/                 static review HTML
   renders/                 rough MP4 outputs
   usage.jsonl              model usage and estimated cost inputs
@@ -44,10 +48,21 @@ Luna and Terra are later candidates for perception and global story planning.
 
 ## Editing Rules
 
-- Horizontal output targets 10 minutes, uses a code-enforced 540–660 second tolerance, and centers on one game.
+- Horizontal output targets 9-12 minutes, enforced in code as 540-720 seconds, and centers on one game.
 - Code enforces duration; models rank and classify beats.
 - Mechanical deletion targets silent travel, routine farming, shopping, and
   respawn time, but preserves meaningful dialogue and event setup.
+- Open on meaningful speech or understandable action, preserve setup before a
+  payoff, and cut dead tails after the reaction.
+- Reviewed game boundaries may define `result_end`; long-form output must end
+  on that Nexus/result beat rather than post-game review.
+- Duration balancing adds neighboring context and prefers trimming scene edges
+  instead of punching holes into selected sequences.
+- Long-form selections cover early, middle, and late game and avoid continuous
+  runs longer than two minutes. Code reserves at least three minutes for each
+  third of the game.
+- Champion select is eligible only when speech or chat establishes the premise;
+  loading footage is never filler.
 - Iteration 0 discovers shorts only within the selected game; whole-VOD discovery is deferred.
 - Vertical output is 1080x1920 with facecam above gameplay and Spanish captions.
 

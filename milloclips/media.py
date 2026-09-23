@@ -185,19 +185,24 @@ def render_vertical(
     output: Path,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
+    if len(facecam) != 4:
+        raise ValueError("Facecam crop must contain x, y, width, and height")
     x, y, width, height = facecam
+    if width <= 0 or height <= 0 or min(x, y) < 0 or x + width > 1 or y + height > 1:
+        raise ValueError(f"Invalid normalized facecam crop: {facecam}")
     face = (
         f"crop=iw*{width}:ih*{height}:iw*{x}:ih*{y},"
-        "scale=1080:700:force_original_aspect_ratio=increase,crop=1080:700"
+        "scale=1080:700:force_original_aspect_ratio=decrease,"
+        "pad=1080:700:(ow-iw)/2:(oh-ih)/2:black"
     )
-    game = "crop=iw*0.56:ih:iw*0.22:0,scale=1080:1220"
+    game = "crop=iw*0.50:ih:iw*0.15:0,scale=1080:1220"
     escaped_subtitles = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
     filters = (
         f"[0:v]split=2[face][game];[face]{face}[faceout];[game]{game}[gameout];"
         f"[faceout][gameout]vstack=inputs=2,subtitles='{escaped_subtitles}':"
-        "force_style='FontName=DejaVu Sans,FontSize=18,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,"
-        "Shadow=0,Alignment=2,MarginV=90',fps=30[v]"
+        "force_style='FontName=DejaVu Sans,FontSize=10,"
+        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,"
+        "Shadow=0,Alignment=2,MarginV=45',fps=30[v]"
     )
     run_ffmpeg(
         [

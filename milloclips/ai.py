@@ -136,6 +136,9 @@ Images appear in this order:\n""" + "\n".join(labels)
 Classify each League gameplay beat. Allowed types: {BEAT_TYPES}.
 Importance is 1 (routine) to 5 (essential). Keep only beats useful to a coherent
 game story. Walking/farming is removable unless dialogue or setup matters.
+CHAMP_SELECT is useful only when speech or chat establishes a premise; loading
+visuals alone are not useful. A scoreboard opened during gameplay is not the
+match result. Use RESULT only for a clear local payoff or the actual game ending.
 Return JSON only: {{"beats":[{{"id":0,"type":"COMBAT","importance":4,"keep":true,"reason":"brief reason"}}]}}.
 Beats:\n{json.dumps([{k: v for k, v in beat.items() if k != 'frames'} for beat in beats], ensure_ascii=False)}
 Images are grouped in beat order, three images per beat.
@@ -165,8 +168,13 @@ Images are grouped in beat order, three images per beat.
             for beat in beats
         ]
         parsed = self._json(
-            "Select chronological beats for a coherent 10-minute League game video. "
-            "Preserve premise, setup, major turns, result, and reactions. Return JSON only: "
+            "Select chronological variable-length beats totaling 9-12 minutes for a coherent League video. "
+            "Open on meaningful speech or immediately understandable action, not obligatory first footage. "
+            "Build a complete arc across early, middle, and late game: premise, setup, escalation, major turns, "
+            "payoff, and the actual Nexus/result ending. Select complete adjacent scene runs with setup, action, "
+            "and reaction rather than isolated beats that begin or end mid-thought. Do not "
+            "select more than six consecutive beats. Exclude routine loading, travel, farming, shopping, and dead "
+            "time unless dialogue or setup makes it necessary. Return JSON only: "
             '{"selected_ids":[0,1],"story":"one sentence"}. Beats:\n'
             + json.dumps(compact, ensure_ascii=False)
         )
@@ -188,7 +196,10 @@ Images are grouped in beat order, three images per beat.
                 for beat in eligible[:10]
             ]
         parsed = self._json(
-            "Find up to 10 self-contained Spanish League short candidates with setup and payoff. "
+            "Find up to 10 self-contained Spanish League short candidates. The first two seconds must contain "
+            "meaningful speech or immediately understandable action. Include enough setup to understand intent, "
+            "then a clear payoff and at most a brief reaction. End before recall, travel, farming, repeated "
+            "commentary, or other dead tail. Reject moments that need missing context. "
             "Return JSON only: {\"candidates\":[{\"start\":0,\"end\":35,\"title\":\"...\","
             "\"reason\":\"...\",\"score\":1}]}. Score 1-5. Beat evidence:\n"
             + json.dumps(eligible, ensure_ascii=False)
