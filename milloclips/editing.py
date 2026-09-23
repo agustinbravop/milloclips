@@ -345,14 +345,20 @@ def _srt_time(seconds: float) -> str:
 
 
 def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
-    words = [
-        word
-        for word in transcript_words(vod_dir)
-        if float(word.get("start", 0)) < candidate["relative_end"] and float(word.get("end", 0)) >= candidate["relative_start"]
-    ]
+    review = vod_dir / "short-captions.reviewed.json"
+    reviewed = read_json(review) if review.exists() else {}
+    if reviewed.get("source_start") == candidate["source_start"] and reviewed.get("source_end") == candidate["source_end"]:
+        subtitle_blocks = reviewed.get("blocks", [])
+    else:
+        words = [
+            word
+            for word in transcript_words(vod_dir)
+            if float(word.get("start", 0)) < candidate["relative_end"] and float(word.get("end", 0)) >= candidate["relative_start"]
+        ]
+        subtitle_blocks = _subtitle_blocks(words, candidate)
     blocks = [
         f"{index}\n{_srt_time(block['start'])} --> {_srt_time(block['end'])}\n{block['text']}\n"
-        for index, block in enumerate(_subtitle_blocks(words, candidate), start=1)
+        for index, block in enumerate(subtitle_blocks, start=1)
     ]
     output = vod_dir / "short.srt"
     output.write_text("\n".join(blocks), encoding="utf-8")
@@ -411,6 +417,7 @@ def render_short(vod_dir: Path, candidate_index: int = 0) -> Path:
         candidate["source_start"],
         candidate["source_end"],
         layout["facecam"],
+        layout.get("gameplay", [0.20, 0, 0.453, 1]),
         subtitles,
         output,
     )

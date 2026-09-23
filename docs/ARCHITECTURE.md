@@ -33,8 +33,9 @@ workspace/<vod-id>/
   long-plan.json           horizontal source intervals
   short-candidates.json    ranked short intervals
   short-candidates.reviewed.json optional human-selected exact boundaries
+  short-captions.reviewed.json optional corrected caption text and timing
   layout.json              normalized facecam crop
-  layout.reviewed.json     optional human-corrected facecam crop
+  layout.reviewed.json     optional human-corrected facecam and gameplay crops
   reports/                 static review HTML
   renders/                 rough MP4 outputs
   usage.jsonl              model usage and estimated cost inputs

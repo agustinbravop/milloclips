@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from milloclips.editing import _beat_intervals, _enforce_duration, _subtitle_blocks, transcript_words, select_game
+from milloclips.editing import _beat_intervals, _enforce_duration, _subtitle_blocks, _write_short_subtitles, transcript_words, select_game
 from milloclips.scan import detect_games
 
 
@@ -101,6 +101,17 @@ class EditingTests(unittest.TestCase):
         self.assertEqual([block["text"] for block in blocks], ["Just go bro", "No puedo creerlo"])
         self.assertTrue(all(block["end"] - block["start"] < 3 for block in blocks))
         self.assertLessEqual(blocks[0]["end"], blocks[1]["start"])
+
+    def test_reviewed_short_captions_replace_raw_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            candidate = {"source_start": 100, "source_end": 110, "relative_start": 20, "relative_end": 30}
+            (directory / "transcript.json").write_text(json.dumps({"words": []}))
+            (directory / "short-captions.reviewed.json").write_text(
+                json.dumps({"source_start": 100, "source_end": 110, "blocks": [{"start": 1, "end": 2, "text": "CORRECTO"}]})
+            )
+            subtitles = _write_short_subtitles(directory, candidate).read_text()
+            self.assertIn("00:00:01,000 --> 00:00:02,000\nCORRECTO", subtitles)
 
     def test_beat_intervals_follow_pauses_and_cover_duration(self) -> None:
         words = [
