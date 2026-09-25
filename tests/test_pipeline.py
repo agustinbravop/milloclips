@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import ImageFont
+
 from milloclips.editing import (
+    _ass_text,
     _beat_intervals,
     _enforce_duration,
     _subtitle_blocks,
@@ -161,7 +165,7 @@ class EditingTests(unittest.TestCase):
             self.assertNotIn("Overlapping", [candidate["title"] for candidate in candidates])
             self.assertEqual(json.loads((directory / "short-candidates.json").read_text())["game_id"], "game-002")
 
-    def test_vertical_render_preserves_crop_aspect_ratio_and_prioritizes_gameplay(self) -> None:
+    def test_vertical_render_uses_reviewed_crops_and_fills_both_sections(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch("milloclips.media.run_ffmpeg") as ffmpeg:
             render_vertical(
                 Path("source.mp4"),
@@ -174,8 +178,9 @@ class EditingTests(unittest.TestCase):
             )
         command = ffmpeg.call_args.args[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("scale=1080:620:force_original_aspect_ratio=increase,crop=1080:620,setsar=1", filters)
-        self.assertIn("scale=1080:1300:force_original_aspect_ratio=increase,crop=1080:1300,setsar=1", filters)
+        self.assertIn("scale=1080:680:force_original_aspect_ratio=increase,crop=1080:680,setsar=1", filters)
+        self.assertIn("scale=1080:1240,setsar=1", filters)
+        self.assertIn("fontsdir=", filters)
 
     def test_shared_league_glossary_covers_current_game_terms(self) -> None:
         glossary = json.loads((Path(__file__).parents[1] / "milloclips" / "league_glossary.json").read_text())
@@ -184,6 +189,7 @@ class EditingTests(unittest.TestCase):
         self.assertIn("Baron Nashor", glossary["objectives_and_map"])
         self.assertIn("Zhonya's Hourglass", glossary["items"])
         self.assertIn("countergank", glossary["community_terms"])
+        self.assertIn("back", glossary["priority_terms"])
 
     def test_duration_is_enforced_in_code(self) -> None:
         beats = [
@@ -274,7 +280,8 @@ class EditingTests(unittest.TestCase):
             )
             subtitles = _write_short_subtitles(directory, candidate).read_text()
             self.assertIn("Dialogue: 0,0:00:01.00,0:00:02.00,Caption", subtitles)
-            self.assertIn(r"{\an5\pos(540,620)}{\1c&H000000FF&\fs80}CORRECTO", subtitles)
+            self.assertIn("Style: Caption,Montserrat Black,96", subtitles)
+            self.assertIn(r"\1c&H000000FF&\fs116\fscx101\fscy101\t(0,120,\fscx100\fscy100)}CORRECTO", subtitles)
 
     def test_ass_captions_highlight_words_at_their_spoken_time(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -289,8 +296,34 @@ class EditingTests(unittest.TestCase):
             (directory / "transcript.json").write_text(json.dumps(transcript))
             subtitles = _write_short_subtitles(directory, candidate).read_text()
             self.assertIn("Dialogue: 0,0:00:01.00,0:00:01.40,Caption", subtitles)
-            self.assertIn(r"{\1c&H000000FF&\fs80}BARON {\1c&H00FFFFFF&\fs72}AHORA", subtitles)
-            self.assertIn(r"{\1c&H00FFFFFF&\fs72}BARON {\1c&H000000FF&\fs80}AHORA", subtitles)
+            self.assertIn(r"\1c&H000000FF&\fs116", subtitles)
+            self.assertIn(r"\t(0,120,\fscx100\fscy100)", subtitles)
+            centers = {}
+            for word in ("BARON", "AHORA"):
+                positions = re.findall(r"\\move\(([^)]+)\)[^\n]*?}" + word, subtitles)
+                self.assertEqual(len(positions), 2)
+                centers[word] = []
+                for position in positions:
+                    start_x, start_y, end_x, end_y, *_ = map(float, position.split(","))
+                    self.assertEqual(start_y, end_y)
+                    self.assertEqual(end_y, 652)
+                    self.assertGreater(abs(start_x - 540), abs(end_x - 540))
+                    centers[word].append(end_x)
+            self.assertLess(centers["BARON"][1], centers["BARON"][0])
+            self.assertLess(centers["AHORA"][1], centers["AHORA"][0])
+
+    def test_caption_spacing_keeps_room_around_highlight(self) -> None:
+        font = ImageFont.truetype(str(Path(__file__).parents[1] / "milloclips/fonts/Montserrat-Black.ttf"), 60)
+        words = [{"text": word} for word in ("si", "el", "fiddlesticks")]
+        positions = [
+            float(re.search(r"\\move\([^,]+,[^,]+,([^,]+),", text).group(1))
+            for text in _ass_text(words, 0, font)
+        ]
+        widths = [font.getlength(word.upper()) * (116 / 96 if index == 0 else 1) for index, word in enumerate(("si", "el", "fiddlesticks"))]
+        short_gap = positions[1] - positions[0] - (widths[0] + widths[1]) / 2
+        long_gap = positions[2] - positions[1] - (widths[1] + widths[2]) / 2
+        self.assertAlmostEqual(short_gap, font.getlength(" ") + 8, delta=0.1)
+        self.assertAlmostEqual(long_gap, font.getlength(" ") + 8, delta=0.1)
 
     def test_rejects_overlapping_reviewed_caption_words(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

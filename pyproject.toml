@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "imageio-ffmpeg>=0.6.0",
   "openai>=2.0.0",
+  "pillow>=11",
   "python-dotenv>=1.0.0",
   "yt-dlp>=2025.9.5",
 ]

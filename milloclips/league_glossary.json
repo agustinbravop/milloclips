@@ -14,6 +14,7 @@
     "inhibidor",
     "torreta",
     "jungla",
+    "back",
     "gank",
     "countergank",
     "smite",
@@ -81,7 +82,7 @@
     "Teleport", "top lane"
   ],
   "community_terms": [
-    "all-in", "backdoor", "backear", "ban", "blind pick", "blue buff", "build", "carry", "CC", "countergank",
+    "all-in", "back", "backdoor", "backear", "ban", "blind pick", "blue buff", "build", "carry", "CC", "countergank",
     "counterpick", "CS", "dive", "draft", "elo", "engage", "facecheck", "farm", "fed", "first blood", "freeze",
     "gank", "GG", "int", "invade", "kite", "kitear", "lane swap", "last hit", "macro", "main", "meta", "nerf",
     "one-shot", "outplay", "peel", "pick", "poke", "power spike", "push", "pushear", "red buff", "roam", "roamear",

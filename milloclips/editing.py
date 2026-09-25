@@ -4,6 +4,8 @@ import json
 import math
 from pathlib import Path
 
+from PIL import ImageFont
+
 from .ai import AI
 from .io import read_json, write_json
 from .media import extract_audio, render_segments, render_vertical, sample_frames
@@ -447,7 +449,7 @@ def _caption_words(block: dict) -> list[dict]:
     return words
 
 
-def _ass_text(words: list[dict], active: int) -> str:
+def _ass_text(words: list[dict], active: int, font: ImageFont.FreeTypeFont) -> list[str]:
     escaped = [
         str(word["text"]).upper().replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
         for word in words
@@ -458,13 +460,30 @@ def _ass_text(words: list[dict], active: int) -> str:
             range(1, len(escaped)),
             key=lambda index: abs(len(" ".join(escaped[:index])) - len(" ".join(escaped[index:]))),
         )
+    lines = [escaped[:split], escaped[split:]] if split is not None else [escaped]
     rendered = []
-    for index, word in enumerate(escaped):
-        separator = r"\N" if index == split else " " if index else ""
-        colour = "&H000000FF&" if index == active else "&H00FFFFFF&"
-        size = 80 if index == active else 72
-        rendered.append(f"{separator}{{\\1c{colour}\\fs{size}}}{word}")
-    return r"{\an5\pos(540,620)}" + "".join(rendered)
+    gap = font.getlength(" ") + 8
+    caption_y = 652
+    for line_index, line in enumerate(lines):
+        widths = [
+            font.getlength(word) * (116 / 96 if index == active else 1)
+            for index, word in enumerate(line, start=split if line_index else 0)
+        ]
+        x = 540 - (sum(widths) + gap * (len(line) - 1)) / 2
+        y = caption_y + (line_index - (len(lines) - 1) / 2) * 80
+        for line_position, (word, width) in enumerate(zip(line, widths)):
+            index = line_position + (split if line_index else 0)
+            colour = "&H000000FF&" if index == active else "&H00FFFFFF&"
+            size = 116 if index == active else 96
+            center = x + width / 2
+            bounce_x = 540 + (center - 540) * 1.01
+            bounce_y = caption_y + (y - caption_y) * 1.01
+            rendered.append(
+                rf"{{\an5\move({bounce_x:.1f},{bounce_y:.1f},{center:.1f},{y:.1f},0,120)"
+                rf"\1c{colour}\fs{size}\fscx101\fscy101\t(0,120,\fscx100\fscy100)}}{word}"
+            )
+            x += width + gap
+    return rendered
 
 
 def _validate_caption_blocks(blocks: list[dict], duration: float) -> None:
@@ -499,6 +518,8 @@ def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
         subtitle_blocks = _subtitle_blocks(words, candidate)
     duration = candidate["source_end"] - candidate["source_start"]
     _validate_caption_blocks(subtitle_blocks, duration)
+    # Pillow's em is larger than libass's visible advances at \fs96.
+    font = ImageFont.truetype(str(Path(__file__).with_name("fonts") / "Montserrat-Black.ttf"), 60)
     events = []
     for block in subtitle_blocks:
         words = _caption_words(block)
@@ -507,8 +528,9 @@ def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
             end = float(words[index + 1]["start"]) if index + 1 < len(words) else float(block["end"])
             if end - start < 0.01:
                 continue
-            events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{_ass_text(words, index)}"
+            events.extend(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{text}"
+                for text in _ass_text(words, index, font)
             )
     output = vod_dir / "short.ass"
     output.write_text(
@@ -517,7 +539,7 @@ def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Caption,Lato Heavy,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,5,60,60,0,1\n\n"
+        "Style: Caption,Montserrat Black,96,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,7,2,5,60,60,0,1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         + "\n".join(events)
         + "\n",

@@ -196,16 +196,17 @@ def render_vertical(
     game_x, game_y, game_width, game_height = gameplay
     face = (
         f"crop=iw*{face_width}:ih*{face_height}:iw*{face_x}:ih*{face_y},"
-        "scale=1080:620:force_original_aspect_ratio=increase,crop=1080:620,setsar=1"
+        "scale=1080:680:force_original_aspect_ratio=increase,crop=1080:680,setsar=1"
     )
     game = (
         f"crop=iw*{game_width}:ih*{game_height}:iw*{game_x}:ih*{game_y},"
-        "scale=1080:1300:force_original_aspect_ratio=increase,crop=1080:1300,setsar=1"
+        "scale=1080:1240,setsar=1"
     )
     escaped_subtitles = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
+    fonts = Path(__file__).with_name("fonts").resolve()
     filters = (
         f"[0:v]split=2[face][game];[face]{face}[faceout];[game]{game}[gameout];"
-        f"[faceout][gameout]vstack=inputs=2,ass='{escaped_subtitles}',fps=30[v]"
+        f"[faceout][gameout]vstack=inputs=2,ass='{escaped_subtitles}':fontsdir='{fonts}',fps=30[v]"
     )
     run_ffmpeg(
         [
