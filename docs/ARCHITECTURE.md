@@ -27,13 +27,15 @@ workspace/<vod-id>/
   games.reviewed.json      optional human corrections
   selection.json           selected game id
   transcript.json          selected-game timestamped words
-  transcript.reviewed.json optional exclusion ranges for known bad transcription
+  transcript.reviewed.json optional exclusion ranges and timestamp-preserving word replacements
+  vocabulary.json          optional per-VOD League names and terms (`{"terms": ["Rengar", "Fear"]}`)
   pregame-transcript.json  cached champion-select transcription when available
   beats.json               variable editorial units split near speech pauses
   long-plan.json           horizontal source intervals
   short-candidates.json    ranked short intervals
   short-candidates.reviewed.json optional human-selected exact boundaries
-  short-captions.reviewed.json optional corrected caption text and timing
+  short-captions.reviewed.json optional corrected phrase and word timing
+  short.ass                generated active-word captions rendered by libass
   layout.json              normalized facecam crop
   layout.reviewed.json     optional human-corrected facecam and gameplay crops
   reports/                 static review HTML
@@ -46,6 +48,8 @@ workspace/<vod-id>/
 All development roles default to `gpt-5-nano`. `whisper-1` supplies word
 timestamps. Model names are configuration, never embedded in artifact logic.
 Luna and Terra are later candidates for perception and global story planning.
+`milloclips/league_glossary.json` is the shared League vocabulary source.
+Per-VOD terms take priority when building Whisper's size-limited prompt.
 
 ## Editing Rules
 
@@ -65,10 +69,14 @@ Luna and Terra are later candidates for perception and global story planning.
 - Champion select is eligible only when speech or chat establishes the premise;
   loading footage is never filler.
 - Iteration 0 discovers shorts only within the selected game; whole-VOD discovery is deferred.
-- Vertical output is 1080x1920 with facecam above gameplay and Spanish captions.
+- Short discovery sees every gameplay beat, selects contiguous beat ranges, scores
+  hook/context/payoff/tightness separately, and removes overlapping lower-ranked candidates.
+- Vertical output is 1080x1920 with a consistent 620px facecam above 1300px
+  gameplay. Both panels scale to fill and crop overflow without changing aspect
+  ratio; Spanish captions are centered over the seam between both panels.
 
 ## Rendering
 
-Iteration 0 uses FFmpeg for deterministic hard cuts and vertical composition.
-Remotion is the preferred next layer for captions, zooms, replays, and reusable
-visual treatments after the structural cut is proven.
+FFmpeg handles deterministic cuts and vertical composition. Iteration 1 uses
+ASS/libass for active-word captions without adding a rendering stack. Add
+Remotion only when motion graphics need animation that ASS cannot express.

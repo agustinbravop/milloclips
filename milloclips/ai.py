@@ -108,13 +108,26 @@ Images appear in this order:\n""" + "\n".join(labels)
                 words.append({"word": vocabulary[index % len(vocabulary)], "start": index * 2.0, "end": index * 2.0 + 0.8})
             return {"text": " ".join(word["word"] for word in words), "words": words, "language": "es"}
         with audio.open("rb") as file:
+            glossary = json.loads(Path(__file__).with_name("league_glossary.json").read_text(encoding="utf-8"))
+            vocabulary_file = self.vod_dir / "vocabulary.json"
+            custom = json.loads(vocabulary_file.read_text(encoding="utf-8")).get("terms", []) if vocabulary_file.exists() else []
+            if not isinstance(custom, list):
+                raise ValueError("vocabulary.json terms must be a list")
+            vocabulary = list(
+                dict.fromkeys(
+                    [
+                        *(str(term).strip() for term in custom if str(term).strip()),
+                        *glossary["priority_terms"],
+                    ]
+                )
+            )
             result = self.client.audio.transcriptions.create(
                 file=file,
                 model="whisper-1",
                 language="es",
                 response_format="verbose_json",
                 timestamp_granularities=["word"],
-                prompt="League of Legends, Fiddlesticks, jungla, gank, Baron, Heraldo, Elmiillor",
+                prompt=", ".join(vocabulary)[:800],
             )
         return result.model_dump()
 
@@ -181,28 +194,38 @@ Images are grouped in beat order, three images per beat.
         return {"selected_ids": parsed.get("selected_ids", []), "story": str(parsed.get("story", ""))}
 
     def shorts(self, beats: list[dict]) -> list[dict]:
-        eligible = [beat for beat in beats if beat["importance"] >= 3 or beat["type"] in {"COMBAT", "REACTION"}]
+        evidence = [
+            {
+                **{key: beat.get(key) for key in ("id", "start", "end", "type", "importance", "keep", "text", "reason")},
+                "anchor": beat["importance"] >= 3 or beat["type"] in {"COMBAT", "REACTION"},
+            }
+            for beat in beats
+        ]
+        if not evidence:
+            return []
         if self.mock:
-            if not eligible:
-                eligible = beats[:1]
+            anchors = [beat for beat in evidence if beat["anchor"]] or evidence[:1]
             return [
                 {
-                    "start": beat["start"],
-                    "end": min(beat["end"] + 20, beats[-1]["end"]),
+                    "start_beat_id": beat["id"],
+                    "end_beat_id": min(beat["id"] + 1, beats[-1]["id"]),
                     "title": f"Moment {beat['id']}",
                     "reason": beat["reason"],
-                    "score": beat["importance"],
+                    "scores": {"hook": beat["importance"], "context": 3, "payoff": beat["importance"], "tightness": 3},
                 }
-                for beat in eligible[:10]
+                for beat in anchors[:10]
             ]
         parsed = self._json(
             "Find up to 10 self-contained Spanish League short candidates. The first two seconds must contain "
             "meaningful speech or immediately understandable action. Include enough setup to understand intent, "
             "then a clear payoff and at most a brief reaction. End before recall, travel, farming, repeated "
-            "commentary, or other dead tail. Reject moments that need missing context. "
-            "Return JSON only: {\"candidates\":[{\"start\":0,\"end\":35,\"title\":\"...\","
-            "\"reason\":\"...\",\"score\":1}]}. Score 1-5. Beat evidence:\n"
-            + json.dumps(eligible, ensure_ascii=False)
+            "commentary, or other dead tail. Reject moments that need missing context. Select one contiguous beat "
+            "range lasting 8-90 seconds per candidate. Anchor=true marks promising moments, but surrounding "
+            "anchor=false beats remain available when needed for setup or payoff. Score hook, context, payoff, and "
+            "tightness separately from 1 (poor) to 5 (excellent). Return JSON only: "
+            "{\"candidates\":[{\"start_beat_id\":0,\"end_beat_id\":2,\"title\":\"...\",\"reason\":\"...\","
+            "\"scores\":{\"hook\":5,\"context\":4,\"payoff\":5,\"tightness\":4}}]}. Beat evidence:\n"
+            + json.dumps(evidence, ensure_ascii=False)
         )
         return parsed.get("candidates", [])
 

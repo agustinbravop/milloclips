@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from .ai import AI
 from .io import read_json, write_json
 from .media import extract_audio, render_segments, render_vertical, sample_frames
+
+
+def _cache_matches(data: dict, **expected: object) -> bool:
+    return all(data.get(key) == value for key, value in expected.items())
+
+
+def _selected_beats(vod_dir: Path, cache_key: dict) -> list[dict]:
+    data = read_json(vod_dir / "beats.json")
+    if not _cache_matches(data, **cache_key):
+        raise SystemExit("beats.json does not match the selected game; run analyze first")
+    return data["beats"]
 
 
 def games(vod_dir: Path) -> list[dict]:
@@ -36,9 +48,22 @@ def transcript_words(vod_dir: Path) -> list[dict]:
     review = vod_dir / "transcript.reviewed.json"
     if not review.exists():
         return words
-    ranges = read_json(review).get("exclude_ranges", [])
+    reviewed = read_json(review)
+    ranges = reviewed.get("exclude_ranges", [])
+    replacements = reviewed.get("replacements", [])
     return [
-        word
+        {
+            **word,
+            "word": next(
+                (
+                    item["text"]
+                    for item in replacements
+                    if float(item["start"]) <= float(word.get("start", 0))
+                    and float(item["end"]) >= float(word.get("end", 0))
+                ),
+                word.get("word", ""),
+            ),
+        }
         for word in words
         if not any(float(item["start"]) < float(word.get("end", 0)) and float(item["end"]) > float(word.get("start", 0)) for item in ranges)
     ]
@@ -78,12 +103,15 @@ def _beat_intervals(
 
 def analyze(vod_dir: Path, ai: AI, force: bool = False, beat_seconds: float = 15) -> list[dict]:
     output = vod_dir / "beats.json"
-    if output.exists() and not force:
-        return read_json(output)["beats"]
-    manifest = read_json(vod_dir / "manifest.json")
     game = selected_game(vod_dir)
-    source = Path(manifest["source"])
     editorial_end = game.get("result_end", game["gameplay_end"])
+    cache_key = {"game_id": game["id"], "gameplay_start": game["gameplay_start"], "editorial_end": editorial_end}
+    cached = read_json(output) if output.exists() else {}
+    if output.exists() and not force:
+        if _cache_matches(cached, **cache_key, target_beat_seconds=beat_seconds):
+            return cached["beats"]
+    manifest = read_json(vod_dir / "manifest.json")
+    source = Path(manifest["source"])
     game_duration = editorial_end - game["gameplay_start"]
     champ_select_start = game.get("champ_select_start")
     pregame_start = (
@@ -92,14 +120,24 @@ def analyze(vod_dir: Path, ai: AI, force: bool = False, beat_seconds: float = 15
         else game["gameplay_start"]
     )
     pregame_duration = game["gameplay_start"] - pregame_start
+    old_beats = cached.get("beats", []) if cached.get("game_id") == game["id"] else []
+    old_game_end = max((float(beat["end"]) for beat in old_beats if beat.get("phase") != "CHAMP_SELECT"), default=-1)
+    old_pregame_start = min((float(beat["start"]) for beat in old_beats if beat.get("phase") == "CHAMP_SELECT"), default=0)
+    legacy_main_cache = abs(old_game_end - game_duration) < 0.01
+    legacy_pregame_cache = legacy_main_cache and abs(old_pregame_start + pregame_duration) < 0.01
 
     transcript_path = vod_dir / "transcript.json"
-    if transcript_path.exists():
-        transcript = read_json(transcript_path)
+    transcript = read_json(transcript_path) if transcript_path.exists() else {}
+    transcript_key = {"game_id": game["id"], "audio_start": game["gameplay_start"], "audio_end": editorial_end}
+    if _cache_matches(transcript, **transcript_key) or ("game_id" not in transcript and legacy_main_cache):
+        if "game_id" not in transcript:
+            transcript.update(transcript_key)
+            write_json(transcript_path, transcript)
     else:
         audio = vod_dir / "selected-game.mp3"
         extract_audio(source, audio, game["gameplay_start"], editorial_end)
         transcript = ai.transcribe(audio, game_duration)
+        transcript.update(transcript_key)
         write_json(transcript_path, transcript)
 
     frame_interval = beat_seconds / 3
@@ -114,12 +152,17 @@ def analyze(vod_dir: Path, ai: AI, force: bool = False, beat_seconds: float = 15
     beats = []
     if pregame_duration:
         pregame_path = vod_dir / "pregame-transcript.json"
-        if pregame_path.exists():
-            pregame = read_json(pregame_path)
+        pregame = read_json(pregame_path) if pregame_path.exists() else {}
+        pregame_key = {"game_id": game["id"], "audio_start": pregame_start, "audio_end": game["gameplay_start"]}
+        if _cache_matches(pregame, **pregame_key) or ("game_id" not in pregame and legacy_pregame_cache):
+            if "game_id" not in pregame:
+                pregame.update(pregame_key)
+                write_json(pregame_path, pregame)
         else:
             audio = vod_dir / "selected-pregame.mp3"
             extract_audio(source, audio, pregame_start, game["gameplay_start"])
             pregame = ai.transcribe(audio, pregame_duration)
+            pregame.update(pregame_key)
             write_json(pregame_path, pregame)
         pregame_words = [
             {**word, "start": float(word.get("start", 0)) - pregame_duration, "end": float(word.get("end", 0)) - pregame_duration}
@@ -158,7 +201,7 @@ def analyze(vod_dir: Path, ai: AI, force: bool = False, beat_seconds: float = 15
     gameplay_frames = [frame for frame in frames if frame["timestamp"] >= game["gameplay_start"]]
     layout = ai.detect_layout(Path(gameplay_frames[0]["path"])) if gameplay_frames else {"facecam": [0.02, 0.03, 0.28, 0.30], "confidence": 0}
     write_json(vod_dir / "layout.json", layout)
-    write_json(output, {"game_id": game["id"], "target_beat_seconds": beat_seconds, "beats": classified})
+    write_json(output, {**cache_key, "target_beat_seconds": beat_seconds, "beats": classified})
     return classified
 
 
@@ -266,10 +309,14 @@ def _enforce_duration(
 
 def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
     output = vod_dir / "long-plan.json"
-    if output.exists() and not force:
-        return read_json(output)
-    beats = read_json(vod_dir / "beats.json")["beats"]
     game = selected_game(vod_dir)
+    editorial_end = game.get("result_end", game["gameplay_end"])
+    cache_key = {"game_id": game["id"], "gameplay_start": game["gameplay_start"], "editorial_end": editorial_end}
+    if output.exists() and not force:
+        cached = read_json(output)
+        if _cache_matches(cached, **cache_key):
+            return cached
+    beats = _selected_beats(vod_dir, cache_key)
     model_plan = ai.plan_long(beats)
     required = {beats[-1]["id"]} if game.get("result_end") is not None and beats else set()
     selected = _enforce_duration(beats, model_plan.get("selected_ids", []), required_ids=required)
@@ -284,7 +331,7 @@ def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
         else:
             segments.append({"source_start": source_start, "source_end": source_end, "beat_ids": [beat["id"]]})
     plan = {
-        "game_id": game["id"],
+        **cache_key,
         "story": model_plan.get("story", ""),
         "selected_ids_raw": model_plan.get("selected_ids", []),
         "selected_ids": selected,
@@ -305,43 +352,137 @@ def render_long(vod_dir: Path) -> Path:
 
 def find_shorts(vod_dir: Path, ai: AI, force: bool = False) -> list[dict]:
     output = vod_dir / "short-candidates.json"
-    if output.exists() and not force:
-        return read_json(output)["candidates"]
-    beats = read_json(vod_dir / "beats.json")["beats"]
     game = selected_game(vod_dir)
+    editorial_end = game.get("result_end", game["gameplay_end"])
+    cache_key = {"game_id": game["id"], "gameplay_start": game["gameplay_start"], "editorial_end": editorial_end}
+    if output.exists() and not force:
+        cached = read_json(output)
+        if _cache_matches(cached, **cache_key):
+            return cached["candidates"]
+    beats = [beat for beat in _selected_beats(vod_dir, cache_key) if beat.get("phase") != "CHAMP_SELECT"]
+    by_id = {beat["id"]: index for index, beat in enumerate(beats)}
     candidates = []
-    for candidate in ai.shorts([beat for beat in beats if beat.get("phase") != "CHAMP_SELECT"]):
-        start = max(0, float(candidate.get("start", 0)))
-        end = min(
-            game.get("result_end", game["gameplay_end"]) - game["gameplay_start"],
-            float(candidate.get("end", start + 30)),
-        )
+    score_names = ("hook", "context", "payoff", "tightness")
+    for candidate in ai.shorts(beats):
+        if not isinstance(candidate, dict):
+            continue
+        start_id, end_id = candidate.get("start_beat_id"), candidate.get("end_beat_id")
+        if (
+            not isinstance(start_id, int)
+            or isinstance(start_id, bool)
+            or not isinstance(end_id, int)
+            or isinstance(end_id, bool)
+            or start_id not in by_id
+            or end_id not in by_id
+        ):
+            continue
+        start_index, end_index = by_id[start_id], by_id[end_id]
+        if end_index < start_index:
+            continue
+        start = max(0, float(beats[start_index]["start"]))
+        end = min(editorial_end - game["gameplay_start"], float(beats[end_index]["end"]))
+        if not math.isfinite(start) or not math.isfinite(end):
+            continue
         if end - start < 8:
             continue
         if end - start > 90:
             end = start + 90
+        raw_scores = candidate.get("scores", {})
+        fallback = candidate.get("score", 1)
+        values = [raw_scores.get(name, fallback) if isinstance(raw_scores, dict) else fallback for name in score_names]
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in values):
+            continue
+        scores = {name: max(1, min(5, float(value))) for name, value in zip(score_names, values)}
         candidates.append(
             {
                 "source_start": game["gameplay_start"] + start,
                 "source_end": game["gameplay_start"] + end,
                 "relative_start": start,
                 "relative_end": end,
+                "start_beat_id": start_id,
+                "end_beat_id": end_id,
                 "title": str(candidate.get("title", "Untitled moment"))[:100],
                 "reason": str(candidate.get("reason", ""))[:240],
-                "score": max(1, min(5, int(candidate.get("score", 1)))),
+                "scores": scores,
+                "score": round(sum(scores.values()) / len(scores), 2),
             }
         )
     candidates.sort(key=lambda item: item["score"], reverse=True)
-    write_json(output, {"game_id": game["id"], "candidates": candidates})
-    return candidates
+    selected = []
+    for candidate in candidates:
+        if any(
+            max(0, min(candidate["relative_end"], other["relative_end"]) - max(candidate["relative_start"], other["relative_start"]))
+            / min(candidate["relative_end"] - candidate["relative_start"], other["relative_end"] - other["relative_start"])
+            >= 0.5
+            for other in selected
+        ):
+            continue
+        selected.append(candidate)
+        if len(selected) == 10:
+            break
+    write_json(output, {**cache_key, "candidates": selected})
+    return selected
 
 
-def _srt_time(seconds: float) -> str:
-    milliseconds = round(max(0, seconds) * 1000)
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, milliseconds = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
+def _ass_time(seconds: float) -> str:
+    centiseconds = round(max(0, seconds) * 100)
+    hours, remainder = divmod(centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    secs, centiseconds = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
+
+
+def _caption_words(block: dict) -> list[dict]:
+    if block.get("words"):
+        return block["words"]
+    tokens = str(block["text"]).split()
+    weights = [max(1, len(token.strip(".,!?¡¿:;"))) for token in tokens]
+    duration = float(block["end"]) - float(block["start"])
+    cursor = float(block["start"])
+    words = []
+    for token, weight in zip(tokens, weights):
+        end = cursor + duration * weight / sum(weights)
+        words.append({"text": token, "start": cursor, "end": end})
+        cursor = end
+    return words
+
+
+def _ass_text(words: list[dict], active: int) -> str:
+    escaped = [
+        str(word["text"]).upper().replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+        for word in words
+    ]
+    split = None
+    if len(" ".join(escaped)) > 22 and len(escaped) >= 4:
+        split = min(
+            range(1, len(escaped)),
+            key=lambda index: abs(len(" ".join(escaped[:index])) - len(" ".join(escaped[index:]))),
+        )
+    rendered = []
+    for index, word in enumerate(escaped):
+        separator = r"\N" if index == split else " " if index else ""
+        colour = "&H000000FF&" if index == active else "&H00FFFFFF&"
+        size = 80 if index == active else 72
+        rendered.append(f"{separator}{{\\1c{colour}\\fs{size}}}{word}")
+    return r"{\an5\pos(540,620)}" + "".join(rendered)
+
+
+def _validate_caption_blocks(blocks: list[dict], duration: float) -> None:
+    previous_end = 0.0
+    for block in blocks:
+        start, end = float(block["start"]), float(block["end"])
+        if not str(block.get("text", "")).strip() or start < previous_end or end <= start or end > duration + 0.01:
+            raise ValueError(f"Invalid caption block: {block}")
+        words = _caption_words(block)
+        if not words or any(
+            not str(word.get("text", "")).strip()
+            or float(word["start"]) < start
+            or float(word["end"]) <= float(word["start"])
+            or float(word["end"]) > end + 0.01
+            for word in words
+        ) or any(float(right["start"]) < float(left["end"]) for left, right in zip(words, words[1:])):
+            raise ValueError(f"Invalid caption words: {block}")
+        previous_end = end
 
 
 def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
@@ -356,12 +497,32 @@ def _write_short_subtitles(vod_dir: Path, candidate: dict) -> Path:
             if float(word.get("start", 0)) < candidate["relative_end"] and float(word.get("end", 0)) >= candidate["relative_start"]
         ]
         subtitle_blocks = _subtitle_blocks(words, candidate)
-    blocks = [
-        f"{index}\n{_srt_time(block['start'])} --> {_srt_time(block['end'])}\n{block['text']}\n"
-        for index, block in enumerate(subtitle_blocks, start=1)
-    ]
-    output = vod_dir / "short.srt"
-    output.write_text("\n".join(blocks), encoding="utf-8")
+    duration = candidate["source_end"] - candidate["source_start"]
+    _validate_caption_blocks(subtitle_blocks, duration)
+    events = []
+    for block in subtitle_blocks:
+        words = _caption_words(block)
+        for index, word in enumerate(words):
+            start = float(word["start"])
+            end = float(words[index + 1]["start"]) if index + 1 < len(words) else float(block["end"])
+            if end - start < 0.01:
+                continue
+            events.append(
+                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{_ass_text(words, index)}"
+            )
+    output = vod_dir / "short.ass"
+    output.write_text(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Caption,Lato Heavy,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,5,60,60,0,1\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        + "\n".join(events)
+        + "\n",
+        encoding="utf-8",
+    )
     return output
 
 
@@ -375,12 +536,25 @@ def _subtitle_blocks(words: list[dict], candidate: dict) -> list[dict]:
         start = max(0, float(group[0]["start"]) - candidate["relative_start"])
         end = min(
             candidate["relative_end"] - candidate["relative_start"],
-            float(group[-1]["end"]) - candidate["relative_start"],
+            max(start + 0.1, float(group[-1]["end"]) - candidate["relative_start"]),
         )
         text = " ".join(str(word["word"]).strip() for word in group)
+        step = min(0.01, (end - start) / (len(group) + 1))
+        starts = []
+        cursor = start
+        for index, word in enumerate(group):
+            latest = end - step * (len(group) - index)
+            word_start = min(max(cursor, float(word["start"]) - candidate["relative_start"]), latest)
+            starts.append(word_start)
+            cursor = word_start + step
+        timed_words = [
+            {"text": str(word["word"]).strip(), "start": word_start, "end": starts[index + 1] if index + 1 < len(starts) else end}
+            for index, (word, word_start) in enumerate(zip(group, starts))
+        ]
         if blocks and blocks[-1]["end"] > start:
             blocks[-1]["end"] = start
-        blocks.append({"start": start, "end": max(start + 0.1, end), "text": text})
+            blocks[-1]["words"][-1]["end"] = start
+        blocks.append({"start": start, "end": end, "text": text, "words": timed_words})
         group.clear()
 
     for word in words:
@@ -390,9 +564,9 @@ def _subtitle_blocks(words: list[dict], candidate: dict) -> list[dict]:
         proposed = " ".join([*(str(item["word"]).strip() for item in group), text])
         if group and (
             float(word["start"]) - float(group[-1]["end"]) > 0.65
-            or len(group) >= 4
-            or len(proposed) > 28
-            or float(word["end"]) - float(group[0]["start"]) > 2.5
+            or len(group) >= 6
+            or len(proposed) > 32
+            or float(word["start"]) - float(group[0]["start"]) > 2.2
         ):
             flush()
         group.append(word)
@@ -405,7 +579,7 @@ def render_short(vod_dir: Path, candidate_index: int = 0) -> Path:
     candidates = short_candidates(vod_dir)
     if not candidates:
         raise SystemExit("No short candidates are available")
-    if candidate_index >= len(candidates):
+    if candidate_index < 0 or candidate_index >= len(candidates):
         raise SystemExit(f"Short candidate index out of range: {candidate_index}")
     candidate = candidates[candidate_index]
     reviewed_layout = vod_dir / "layout.reviewed.json"

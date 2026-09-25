@@ -194,15 +194,18 @@ def render_vertical(
             raise ValueError(f"Invalid normalized {name.lower()} crop: {crop}")
     face_x, face_y, face_width, face_height = facecam
     game_x, game_y, game_width, game_height = gameplay
-    face = f"crop=iw*{face_width}:ih*{face_height}:iw*{face_x}:ih*{face_y},scale=1080:790"
-    game = f"crop=iw*{game_width}:ih*{game_height}:iw*{game_x}:ih*{game_y},scale=1080:1130"
+    face = (
+        f"crop=iw*{face_width}:ih*{face_height}:iw*{face_x}:ih*{face_y},"
+        "scale=1080:620:force_original_aspect_ratio=increase,crop=1080:620,setsar=1"
+    )
+    game = (
+        f"crop=iw*{game_width}:ih*{game_height}:iw*{game_x}:ih*{game_y},"
+        "scale=1080:1300:force_original_aspect_ratio=increase,crop=1080:1300,setsar=1"
+    )
     escaped_subtitles = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
     filters = (
         f"[0:v]split=2[face][game];[face]{face}[faceout];[game]{game}[gameout];"
-        f"[faceout][gameout]vstack=inputs=2,subtitles='{escaped_subtitles}':"
-        "force_style='FontName=Lato Heavy,FontSize=9,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,"
-        "Shadow=0,Alignment=2,MarginV=75',fps=30[v]"
+        f"[faceout][gameout]vstack=inputs=2,ass='{escaped_subtitles}',fps=30[v]"
     )
     run_ffmpeg(
         [

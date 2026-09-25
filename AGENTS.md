@@ -2,8 +2,15 @@
 
 ## Current Goal
 
-Complete Iteration 0 end to end on one real Kick VOD. Optimize for fast
-learning, not production polish.
+Complete the submission requested in [Elmiillor's AI editor challenge](https://x.com/Elmiillor/status/2100601890383835200)
+end to end. Eligible source content is limited to Kick VODs from September 17
+through October 1, 2026. The submission requires one approximately 10-minute
+AI-edited video, two AI-edited vertical shorts, and one AI-generated thumbnail;
+creativity, humor, editorial judgment, quality, and productivity are the
+evaluation criteria.
+
+Use the September 23, 2026 League of Legends VOD [ELISE BUFFS](https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee-746f6398ad8e)
+for the current real run. Optimize for fast learning before production polish.
 
 ## Rules
 
@@ -29,5 +36,5 @@ For media integration, run the synthetic fixture command documented by
 
 ## Missing External Inputs
 
-A real run eventually requires `OPENAI_API_KEY` and one representative Kick
-VOD URL. Never print or commit credentials.
+A real run requires `OPENAI_API_KEY`. The representative Kick VOD is fixed
+above. Never print or commit credentials.
