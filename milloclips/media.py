@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import shutil
 import subprocess
@@ -178,50 +179,66 @@ def render_segments(source: Path, segments: list[dict], output: Path) -> None:
 
 def render_vertical(
     source: Path,
-    start: float,
-    end: float,
+    segments: list[dict],
     facecam: list[float],
     gameplay: list[float],
     subtitles: Path,
     output: Path,
+    hud: list[float] | None = None,
 ) -> None:
+    if not segments or any(not all(math.isfinite(segment[key]) for key in ("source_start", "source_end"))
+                           or not 0 <= segment["source_start"] < segment["source_end"] for segment in segments) or any(
+        right["source_start"] < left["source_end"] for left, right in zip(segments, segments[1:])
+    ):
+        raise ValueError("Short segments must be chronological, non-overlapping positive intervals")
     output.parent.mkdir(parents=True, exist_ok=True)
-    for name, crop in (("Facecam", facecam), ("Gameplay", gameplay)):
+    hud = [0.855, 0, 0.145, 0.028] if hud is None else hud
+    for name, crop in (("Facecam", facecam), ("Gameplay", gameplay), ("HUD", hud)):
         if len(crop) != 4:
             raise ValueError(f"{name} crop must contain x, y, width, and height")
         x, y, width, height = crop
-        if width <= 0 or height <= 0 or min(x, y) < 0 or x + width > 1 or y + height > 1:
+        if not all(math.isfinite(value) for value in crop) or width <= 0 or height <= 0 or min(x, y) < 0 or x + width > 1 or y + height > 1:
             raise ValueError(f"Invalid normalized {name.lower()} crop: {crop}")
     face_x, face_y, face_width, face_height = facecam
     game_x, game_y, game_width, game_height = gameplay
+    hud_x, hud_y, hud_width, hud_height = hud
     face = (
         f"crop=iw*{face_width}:ih*{face_height}:iw*{face_x}:ih*{face_y},"
         "scale=1080:680:force_original_aspect_ratio=increase,crop=1080:680,setsar=1"
     )
     game = (
         f"crop=iw*{game_width}:ih*{game_height}:iw*{game_x}:ih*{game_y},"
-        "scale=1080:1240,setsar=1"
+        "scale=1080:1240:force_original_aspect_ratio=increase,crop=1080:1240,setsar=1"
+    )
+    score = (
+        f"crop=iw*{hud_width}:ih*{hud_height}:iw*{hud_x}:ih*{hud_y},"
+        "scale=320:-2:flags=lanczos,setsar=1"
     )
     escaped_subtitles = str(subtitles.resolve()).replace("\\", "/").replace(":", "\\:")
     fonts = Path(__file__).with_name("fonts").resolve()
-    filters = (
-        f"[0:v]split=2[face][game];[face]{face}[faceout];[game]{game}[gameout];"
-        f"[faceout][gameout]vstack=inputs=2,ass='{escaped_subtitles}':fontsdir='{fonts}',fps=30[v]"
-    )
+    chains = []
+    inputs = []
+    for index, segment in enumerate(segments):
+        chains.extend((f"[{index}:v]setpts=PTS-STARTPTS[v{index}]",
+                       f"[{index}:a]asetpts=N/SR/TB[a{index}]"))
+        inputs.append(f"[v{index}][a{index}]")
+    chains.extend((f"{''.join(inputs)}concat=n={len(segments)}:v=1:a=1[rawv][rawa]",
+                   "[rawv]split=3[face][game][hud]", f"[face]{face}[faceout]", f"[game]{game}[gameout]",
+                    f"[hud]{score}[hudout]", "[gameout][hudout]overlay=x=W-w:y=0[gamehud]",
+                   f"[faceout][gamehud]vstack=inputs=2,ass='{escaped_subtitles}':fontsdir='{fonts}',fps=30[v]",
+                   "[rawa]aresample=48000[a]"))
     run_ffmpeg(
         [
-            "-ss",
-            str(start),
-            "-i",
-            str(source),
-            "-t",
-            str(end - start),
+            *[argument for segment in segments for argument in (
+                "-ss", str(segment["source_start"]), "-t", str(segment["source_end"] - segment["source_start"]),
+                "-i", str(source),
+            )],
             "-filter_complex",
-            filters,
+            ";".join(chains),
             "-map",
             "[v]",
             "-map",
-            "0:a",
+            "[a]",
             "-c:v",
             "libx264",
             "-preset",
@@ -230,8 +247,6 @@ def render_vertical(
             "21",
             "-c:a",
             "aac",
-            "-af",
-            "loudnorm,aresample=48000",
             "-shortest",
             str(output),
         ]
