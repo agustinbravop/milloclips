@@ -8,15 +8,29 @@ from .io import format_time, read_json
 
 
 CSS = """
-:root{--ink:#10110e;--paper:#e9e4d2;--acid:#d6ff00;--red:#ff3b30;--muted:#756f60}
-*{box-sizing:border-box}body{margin:0;background:var(--ink);color:var(--paper);font-family:Georgia,serif}
-header{padding:48px max(24px,6vw) 28px;border-bottom:1px solid #444;background:repeating-linear-gradient(135deg,#10110e 0 14px,#161812 14px 28px)}
-h1,h2,.label{font-family:Impact,"Arial Narrow",sans-serif;text-transform:uppercase;letter-spacing:.04em;margin:0}
-h1{font-size:clamp(3rem,9vw,8rem);line-height:.82;color:var(--acid)}
-.dek{max-width:680px;font-size:1.1rem;color:#b9b4a5;margin-top:22px}.timeline{display:flex;height:54px;margin-top:32px;border:2px solid var(--paper)}
-.slice{min-width:2px;border-right:1px solid #111}.IN_GAME{background:var(--acid)}.CHAMP_SELECT{background:#58a6ff}.LOADING{background:#f4a261}.POST_GAME{background:var(--red)}.OTHER,.QUEUE{background:#333}
-main{padding:36px max(24px,6vw) 80px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}.card{border:1px solid #59584f;background:#191a16;padding:18px;box-shadow:8px 8px 0 #000}.card h2{font-size:2rem;color:var(--acid)}.card img{width:100%;aspect-ratio:16/9;object-fit:cover;filter:saturate(.8) contrast(1.08);border:1px solid #59584f;margin-top:14px}
-.time{font:700 1.3rem "Courier New",monospace;margin:12px 0}.meta{color:#aaa493}.badge{display:inline-block;background:var(--paper);color:var(--ink);font:700 .72rem "Courier New",monospace;padding:5px 7px;margin:4px 4px 0 0;text-transform:uppercase}.empty{border:1px dashed var(--muted);padding:32px;color:#aaa493}
+:root{color-scheme:dark;--bg:oklch(18% .012 105);--panel:oklch(23% .012 105);--ink:oklch(94% .009 105);--muted:oklch(76% .01 105);--line:oklch(39% .012 105);--accent:oklch(84% .18 117)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+header,main{width:min(100% - 40px,1020px);margin-inline:auto}
+header{padding:48px 0 28px;border-bottom:1px solid var(--line)}
+h1,h2,p{margin:0}h1{font-size:2.5rem;line-height:1.15;letter-spacing:-.035em;margin:10px 0 14px}
+h2{font-size:1.35rem;line-height:1.3;letter-spacing:-.015em}
+.label,.eyebrow,.fact dt{font-size:.78rem;font-weight:750;text-transform:uppercase;letter-spacing:.09em;color:var(--accent)}
+.dek{max-width:70ch;color:var(--muted);overflow-wrap:anywhere}
+main{padding-block:32px 72px}.stories{display:grid;gap:16px}.story,.game{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:24px}
+.story-head{display:flex;align-items:flex-start;gap:18px}.rank{flex:none;color:var(--accent);font:700 1rem/1.5 ui-monospace,SFMono-Regular,monospace}
+.story-content{min-width:0;max-width:75ch}.story-content h2{overflow-wrap:anywhere}
+.time{font:600 .92rem/1.5 ui-monospace,SFMono-Regular,monospace;color:var(--muted);margin-top:8px;font-variant-numeric:tabular-nums}
+.summary{margin:20px 0;overflow-wrap:anywhere}.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:0}
+.fact{margin:0}.fact dt{margin-bottom:4px}.fact dd{margin:0;overflow-wrap:anywhere}
+.segments{margin:18px 0 0;color:var(--muted);font-size:.9rem}.segments span{color:var(--ink)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px}
+.game img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px;margin-top:20px}
+.game .facts{margin-top:18px}.empty{padding:32px;border:1px dashed var(--line);border-radius:8px;color:var(--muted)}
+.timeline{display:flex;height:26px;margin-top:26px;border-radius:4px;overflow:hidden;background:var(--line)}
+.slice{min-width:2px}.IN_GAME{background:var(--accent)}.CHAMP_SELECT{background:oklch(70% .12 235)}.LOADING{background:oklch(79% .13 70)}.POST_GAME{background:oklch(69% .16 25)}.OTHER,.QUEUE{background:var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;color:var(--muted);font-size:.84rem}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+@media(max-width:600px){header,main{width:min(100% - 32px,1020px)}header{padding-top:30px}h1{font-size:2rem}.story,.game{padding:18px}.facts{grid-template-columns:1fr}.story-head{gap:12px}}
 """
 
 
@@ -36,14 +50,14 @@ def scan_report(vod_dir: Path) -> Path:
         nearest = min(states, key=lambda point: abs(point["timestamp"] - game["gameplay_start"])) if states else None
         image = f'<img src="{Path(nearest["frame"]).as_uri()}" alt="Gameplay near detected start">' if nearest else ""
         cards.append(
-            f"""<article class="card"><h2>{html.escape(game['id'])}</h2>
-<div class="time">{format_time(game['gameplay_start'])} → {format_time(game['gameplay_end'])}</div>
-<p class="meta">Gameplay duration: {format_time(game['duration'])}</p>
-<span class="badge">champ {format_time(game['champ_select_start']) if game['champ_select_start'] is not None else 'unknown'}</span>
-<span class="badge">load {format_time(game['loading_start']) if game['loading_start'] is not None else 'unknown'}</span>{image}</article>"""
+            f"""<article class="game"><h2>{html.escape(game['id'])}</h2>
+<p class="time">{format_time(game['gameplay_start'])} → {format_time(game['gameplay_end'])}</p>
+<dl class="facts"><div class="fact"><dt>Gameplay</dt><dd>{format_time(game['duration'])}</dd></div>
+<div class="fact"><dt>Champion select</dt><dd>{format_time(game['champ_select_start']) if game['champ_select_start'] is not None else 'Unknown'}</dd></div>
+<div class="fact"><dt>Loading</dt><dd>{format_time(game['loading_start']) if game['loading_start'] is not None else 'Unknown'}</dd></div></dl>{image}</article>"""
         )
     body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips scan</title><style>{CSS}</style></head>
-<body><header><div class="label">Iteration 0 / VOD scan</div><h1>Game<br>Contact Sheet</h1><p class="dek">{html.escape(str(manifest['metadata'].get('title') or manifest['vod_id']))} · {format_time(total)} · {len(games)} games detected</p><div class="timeline">{''.join(slices)}</div></header>
+<body><header><p class="label">VOD scan</p><h1>Detected games</h1><p class="dek">{html.escape(str(manifest['metadata'].get('title') or manifest['vod_id']))} · {format_time(total)} · {len(games)} games</p><div class="timeline" aria-label="Stream timeline">{''.join(slices)}</div><div class="legend"><span><i class="IN_GAME"></i>Gameplay</span><span><i class="CHAMP_SELECT"></i>Champion select</span><span><i class="LOADING"></i>Loading</span><span><i class="POST_GAME"></i>Post-game</span><span><i class="OTHER"></i>Other</span></div></header>
 <main><div class="grid">{''.join(cards) if cards else '<div class="empty">No games detected. Review stream-states.json before continuing.</div>'}</div></main></body></html>"""
     output = vod_dir / "reports" / "scan-report.html"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,10 +68,12 @@ def scan_report(vod_dir: Path) -> Path:
 def shorts_report(vod_dir: Path) -> Path:
     candidates = short_candidates(vod_dir)
     cards = [
-        f"""<article class="card"><h2>{html.escape(item['title'])}</h2><div class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])}</div><p>{html.escape(item['reason'])}</p><span class="badge">score {item['score']}</span></article>"""
-        for item in candidates
+        f"""<article class="story"><div class="story-head"><span class="rank">{index:02d}</span><div class="story-content"><h2>{html.escape(item['title'])}</h2><p class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])} · {format_time(item.get('duration', item['source_end'] - item['source_start']))} edited · {len(item.get('segments', [item]))} scene(s){f" · {html.escape(item['render_name'])}.mp4" if 'render_name' in item else f" · short-{item['output_number']:02d}.mp4" if 'output_number' in item else ''}</p></div></div>
+{f'<dl class="facts"><div class="fact"><dt>Hook</dt><dd>{html.escape(item["hook"])}</dd></div><div class="fact"><dt>Payoff</dt><dd>{html.escape(item["payoff"])}</dd></div></dl>' if item.get('hook') and item.get('payoff') else f'<p class="summary">{html.escape(item["reason"])}</p>'}
+<p class="segments">Source cuts: <span>{' · '.join(f"{format_time(segment['source_start'])}–{format_time(segment['source_end'])}" for segment in item.get('segments', [item]))}</span>{f" · Score {item['score']}" if 'score' in item else ''}</p></article>"""
+        for index, item in enumerate(candidates, 1)
     ]
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><div class="label">Iteration 0 / Shorts</div><h1>Vertical<br>Candidates</h1><p class="dek">League-only moments ranked for a self-contained setup and payoff.</p></header><main><div class="grid">{''.join(cards) if cards else '<div class="empty">No candidates found.</div>'}</div></main></body></html>"""
+    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><p class="label">Shorts review</p><h1>Story candidates</h1><p class="dek">{len(candidates)} ranked stories from the selected game. Times refer to the source VOD; edited length excludes gaps between scenes.</p></header><main><div class="stories">{''.join(cards) if cards else '<div class="empty">No candidates found. Check the short discovery output before rendering.</div>'}</div></main></body></html>"""
     output = vod_dir / "reports" / "short-candidates.html"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(body, encoding="utf-8")
