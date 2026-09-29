@@ -49,11 +49,21 @@ uv run milloclips plan-long workspace/<vod-id>
 uv run milloclips render-long workspace/<vod-id>
 uv run milloclips find-shorts workspace/<vod-id>
 uv run milloclips render-short workspace/<vod-id>
+uv run milloclips thumbnails workspace/f1ca1ecfc69f
 ```
 
 Use `--mock` on AI commands to exercise the pipeline without API calls. Every
 stage caches JSON artifacts under its VOD directory. Delete only the artifact
 for the stage that should be rerun, or pass `--force`.
+
+`thumbnails` creates six layouts from real cached selected-game frames and a
+contact sheet under `renders/thumbnails/`. No AI-generated Rift backgrounds are
+used. Riot Data Dragon item, champion, and rune icons are fetched only for
+layouts that need them and cached in the same folder. Add streamer
+reaction cutouts to `assets/faces/` (see its README) to replace the foreground
+silhouettes; no stream facecam crop is used. The selected long cut mentions
+Zeke's Convergence, so thumbnails use its official Riot Data Dragon icon
+instead of guessing an item from screenshot pixels.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for artifact contracts.
 

@@ -13,6 +13,7 @@ from .kick import print_vods, recent_vods
 from .media import ingest
 from .reports import scan_report, shorts_report
 from .scan import scan
+from .thumbnails import render_thumbnails
 
 
 def parser() -> argparse.ArgumentParser:
@@ -50,6 +51,11 @@ def parser() -> argparse.ArgumentParser:
     short_render.add_argument("vod_dir", type=Path)
     short_render.add_argument("--candidate", type=int, default=0)
 
+    thumbnails = commands.add_parser("thumbnails", help="Generate six Fiddlesticks thumbnail variants and a contact sheet")
+    thumbnails.add_argument("vod_dir", type=Path)
+    thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
+    thumbnails.add_argument("--force", action="store_true")
+
     fixture = commands.add_parser("fixture", help="Run a synthetic Iteration 0 pipeline without an API key")
     fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"))
     fixture.add_argument("--seconds", type=int, default=1200)
@@ -83,7 +89,7 @@ def main() -> None:
         plan_long(vod_dir, ai, force=arguments.force)
         record_run(vod_dir, "plan-long", model=ai.model, mock=True)
         find_shorts(vod_dir, ai, force=arguments.force)
-        record_run(vod_dir, "find-shorts", model=ai.model, mock=True)
+        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.shorts_model}", mock=True)
         print(shorts_report(vod_dir))
         if arguments.render:
             print(render_long(vod_dir))
@@ -104,6 +110,9 @@ def main() -> None:
         print(render_short(vod_dir, arguments.candidate))
         record_run(vod_dir, "render-short")
         return
+    if arguments.command == "thumbnails":
+        print(render_thumbnails(vod_dir, arguments.faces, arguments.force))
+        return
 
     ai = AI(vod_dir, mock=arguments.mock)
     if arguments.command == "scan":
@@ -120,5 +129,5 @@ def main() -> None:
         print(f"{vod_dir / 'long-plan.json'} ({plan['duration']:.1f}s)")
     elif arguments.command == "find-shorts":
         find_shorts(vod_dir, ai, force=arguments.force)
-        record_run(vod_dir, "find-shorts", model=ai.model, mock=arguments.mock)
+        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.shorts_model}", mock=arguments.mock)
         print(shorts_report(vod_dir))
