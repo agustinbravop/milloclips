@@ -9,22 +9,32 @@ from unittest.mock import patch
 
 from PIL import ImageFont
 
+from milloclips.ai import AI
 from milloclips.editing import (
     _ass_text,
     _beat_intervals,
+    _download_asset,
     _enforce_duration,
+    _long_scene_ranges,
+    _long_transitions,
+    _avoid_split_word,
     _resolve_evidence,
     _retime_short,
     _short_evidence,
+    _validate_short_candidates,
     _subtitle_blocks,
     _validate_caption_blocks,
     _write_short_subtitles,
     analyze,
     find_shorts,
+    plan_long,
     select_game,
+    short_candidates,
+    render_short,
     transcript_words,
 )
-from milloclips.media import render_vertical
+from milloclips.media import render_long_video, render_vertical, title_music_window
+from milloclips.reports import shorts_report
 from milloclips.scan import detect_games
 
 
@@ -66,6 +76,141 @@ class GameDetectionTests(unittest.TestCase):
 
 
 class EditingTests(unittest.TestCase):
+    def test_short_callback_does_not_replace_elmiillor_cold_open(self) -> None:
+        beats = [
+            {"id": 8, "start": 0, "end": 20, "phase": "IN_GAME", "importance": 5, "keep": True},
+            {"id": 9, "start": 20, "end": 40, "phase": "IN_GAME", "importance": 5, "keep": True},
+        ]
+
+        class FakeAI:
+            mock = False
+
+            def plan_long(self, _beats: list[dict]) -> dict:
+                return {"scenes": [{"start_beat_id": 8, "end_beat_id": 9, "purpose": "ElmilloR play"}],
+                        "selected_ids": [8, 9], "cold_open_beat_id": 8, "story": "test"}
+
+        def refine(_directory, _ai, _game, _beats, _scenes, _cache, cold_open_beat_id, _force):
+            self.assertEqual(cold_open_beat_id, 8)
+            return ([{"source_start": 100, "source_end": 650}],
+                    {"source_start": 110, "source_end": 118, "relative_start": 10, "relative_end": 18})
+
+        callback = {"title": "Teammate ACE", "segments": [{"relative_start": 20, "relative_end": 40}]}
+        game = {"id": "game-001", "gameplay_start": 100, "gameplay_end": 700}
+        with tempfile.TemporaryDirectory() as temporary, patch("milloclips.editing.selected_game", return_value=game), \
+                patch("milloclips.editing._selected_beats", return_value=beats), \
+                patch("milloclips.editing._long_scene_ranges", return_value=[{"first_index": 0, "last_index": 1,
+                      "start_beat_id": 8, "end_beat_id": 9, "purpose": "ElmilloR play"}]), \
+                patch("milloclips.editing._refine_long_scenes", side_effect=refine), \
+                patch("milloclips.editing.short_candidates", return_value=[callback]):
+            directory = Path(temporary)
+            (directory / "short-candidates.json").write_text("{}")
+            plan_long(directory, FakeAI(), force=True)
+
+    def test_long_prompt_requires_elmiillor_as_cold_open_subject(self) -> None:
+        ai = AI(Path("."), mock=True)
+        ai.mock = False
+        beat = {"id": 1, "start": 0, "end": 20, "phase": "IN_GAME", "type": "COMBAT",
+                "importance": 5, "keep": True, "text": "play", "reason": "play"}
+        with patch.object(ai, "_json", return_value={"scenes": [], "cold_open_beat_id": 1}) as request:
+            ai.plan_long([beat])
+        self.assertIn("ElmilloR himself", request.call_args.args[0])
+
+    def test_long_cut_moves_mid_word_start_to_previous_pause(self) -> None:
+        words = [
+            {"word": "es", "start": 9.0, "end": 9.3},
+            {"word": "no", "start": 10.0, "end": 10.2},
+            {"word": "siquiera", "start": 10.2, "end": 10.8},
+        ]
+        self.assertEqual(_avoid_split_word(10.5, 12, words, (8, 15)), (9.9, 12))
+
+    def test_long_transition_timeline_includes_cards_and_every_scene(self) -> None:
+        plan = {"cold_open": {"source_start": 10, "source_end": 16}, "title_duration": 2.5,
+                "segments": [{"source_start": 20, "source_end": 30}, {"source_start": 40, "source_end": 55}]}
+        transitions = _long_transitions(plan)
+        self.assertEqual([item["output_time"] for item in transitions], [6, 8.5, 18.5, 33.5])
+        self.assertEqual(transitions[-1]["label"], "result -> end card")
+
+    def test_shared_artwork_download_uses_browser_user_agent(self) -> None:
+        class Response:
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b"image"
+
+        with tempfile.TemporaryDirectory() as temporary, patch("milloclips.editing.urlopen", return_value=Response()) as open_url:
+            _download_asset(Path(temporary) / "icon.png", "https://elmiillor.com/favicon.png")
+        request = open_url.call_args.args[0]
+        self.assertIn("Mozilla", request.get_header("User-agent"))
+
+    def test_long_plan_uses_complete_scenes_and_keeps_actual_ending(self) -> None:
+        beats = [
+            {"id": index, "start": index * 10, "end": (index + 1) * 10, "phase": "IN_GAME",
+             "importance": 4, "keep": True}
+            for index in range(60)
+        ]
+        scenes = _long_scene_ranges(beats, {"scenes": [
+            {"start_beat_id": 0, "end_beat_id": 25, "purpose": "premise"},
+            {"start_beat_id": 30, "end_beat_id": 56, "purpose": "escalation"},
+        ]})
+        self.assertEqual(scenes[0]["start_beat_id"], 0)
+        self.assertEqual(scenes[-1]["end_beat_id"], 59)
+        self.assertIn("actual final fight", scenes[-1]["purpose"])
+
+    def test_long_render_orders_cold_open_title_gameplay_and_end_card(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("milloclips.media.run_ffmpeg") as ffmpeg:
+            root = Path(temporary)
+            render_long_video(Path("source.mp4"), [{"source_start": 20, "source_end": 40}],
+                              {"source_start": 30, "source_end": 37}, root / "title.mp4", root / "end.mp4",
+                              root / "long.mp4")
+        command = ffmpeg.call_args.args[0]
+        filters = command[command.index("-filter_complex") + 1]
+        self.assertIn("[v0][a0][titlev][titlea][v1][a1][endv][enda]concat=n=4", filters)
+        self.assertIn("[2:a]atrim=duration=2.5", filters)
+        self.assertIn("[3:a]atrim=duration=8.0", filters)
+        self.assertNotIn("zoompan=", filters)
+        self.assertNotIn("-loop", command)
+        self.assertEqual(command.count("-ss"), 2)
+        self.assertEqual(command.count("source.mp4"), 2)
+
+    def test_title_music_straddles_the_card_in_both_directions(self) -> None:
+        self.assertEqual(title_music_window(6.0, 5.0),
+                         {"delay": 5.0, "length": 7.0, "fade_in": 1.0, "fade_out": 1.0})
+        with tempfile.TemporaryDirectory() as temporary, patch("milloclips.media.run_ffmpeg") as ffmpeg:
+            root = Path(temporary)
+            render_long_video(Path("source.mp4"), [{"source_start": 20, "source_end": 40}],
+                              {"source_start": 30, "source_end": 36}, root / "title.mp4", root / "end.mp4",
+                              root / "long.mp4", title_duration=5.0, end_duration=12.0,
+                              title_music=root / "sting.webm", title_music_start=42.5)
+            music = str(root / "sting.webm")
+        command = ffmpeg.call_args.args[0]
+        filters = command[command.index("-filter_complex") + 1]
+        # The 6s cold open puts the card at 6s-11s, so a 7s clip at 5s covers 1s before and 1s after it.
+        self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42.5", "-t", "7.0", "-i"])
+        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=6.0:d=1.0:curve=qua,adelay=5000:all=1[musica]", filters)
+        self.assertIn("volume=0.309375", filters)
+        self.assertIn("amix=inputs=2:duration=first:dropout_transition=0:normalize=0", filters)
+        # loudnorm has to run before the mix or its dynamic gain reshapes both fades.
+        self.assertLess(filters.index("loudnorm"), filters.index("amix"))
+
+    def test_end_music_starts_before_the_muted_end_card(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch("milloclips.media.run_ffmpeg") as ffmpeg:
+            root = Path(temporary)
+            render_long_video(Path("source.mp4"), [{"source_start": 20, "source_end": 40}],
+                              {"source_start": 30, "source_end": 36}, root / "title.mp4", root / "end.mp4",
+                              root / "long.mp4", title_duration=5.0, end_duration=12.0,
+                              end_music=root / "music.webm", end_music_start=42)
+            music = str(root / "music.webm")
+        command = ffmpeg.call_args.args[0]
+        filters = command[command.index("-filter_complex") + 1]
+        self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42", "-t", "13.0", "-i"])
+        self.assertIn("[3:a]atrim=duration=12.0", filters)
+        self.assertIn("volume=0[enda]", filters)
+        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=12.0:d=1:curve=qua,adelay=30000:all=1[endmusic]", filters)
+
     def test_legacy_matching_transcript_is_reused(self) -> None:
         class FakeAI:
             def transcribe(self, *_args: object) -> dict:
@@ -99,8 +244,10 @@ class EditingTests(unittest.TestCase):
         class FakeAI:
             seen: list[dict] = []
             mock = True
+            short_calls = 0
 
             def shorts(self, beats: list[dict]) -> list[dict]:
+                self.short_calls += 1
                 self.seen = beats
                 return [
                     {"title": "Full game arc", "scenes": [
@@ -128,7 +275,10 @@ class EditingTests(unittest.TestCase):
         ]):
             directory = Path(temporary)
             game = {"id": "game-002", "gameplay_start": 100, "gameplay_end": 240}
-            cache_key = {"game_id": "game-002", "gameplay_start": 100, "editorial_end": 240}
+            source_identity = {"path": str(Path("source.mp4").resolve()), "size": None, "mtime_ns": None}
+            transcript_edits = {name: None for name in ("transcript.reviewed.json", "short-transcript.json", "short-transcript.reviewed.json")}
+            cache_key = {"game_id": "game-002", "gameplay_start": 100, "editorial_end": 240,
+                         "transcript_edits": transcript_edits, "source_identity": source_identity}
             beats = [
                 {
                     "id": index,
@@ -159,11 +309,16 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(candidates[0]["title"], "Actual payoff")
             self.assertEqual(candidates[0]["duration"], 49)
             self.assertEqual([segment["source_start"] for segment in candidates[0]["segments"]], [101, 142, 182])
-            self.assertEqual(json.loads((directory / "short-proposals.json").read_text())["version"], 7)
+            self.assertEqual(json.loads((directory / "short-proposals.json").read_text())["version"], 8)
             self.assertEqual(len(ai.seen_candidates), 1)
             self.assertEqual(find_shorts(directory, ai), candidates)
+            self.assertEqual(ai.short_calls, 1)
+            beats[0]["reason"] = "changed analysis"
+            (directory / "beats.json").write_text(json.dumps({**cache_key, "beats": beats}))
+            self.assertEqual(find_shorts(directory, ai), candidates)
+            self.assertEqual(ai.short_calls, 2)
             ai.choose_shorts = lambda _candidates, _images: []
-            self.assertEqual(find_shorts(directory, ai, force=True), [])
+            self.assertEqual(find_shorts(directory, ai, force=True), candidates)
             (directory / "short-exclusions.reviewed.json").write_text(json.dumps({"game_id": "game-002", "ranges": [{"start": 0, "end": 20}]}))
             self.assertEqual(find_shorts(directory, ai), [])
             self.assertEqual(len(ai.seen), len(beats) - 2)
@@ -208,8 +363,12 @@ class EditingTests(unittest.TestCase):
             (directory / "games.json").write_text(json.dumps({"games": [game]}))
             (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
             (directory / "manifest.json").write_text(json.dumps({"source": "source.mp4"}))
+            source_identity = {"path": str(Path("source.mp4").resolve()), "size": None, "mtime_ns": None}
             (directory / "beats.json").write_text(json.dumps({"game_id": "game-001", "gameplay_start": 100,
-                                                                 "editorial_end": 280, "beats": beats}))
+                                                                 "editorial_end": 280, "transcript_edits": {
+                                                                     "transcript.reviewed.json": None, "short-transcript.json": None,
+                                                                     "short-transcript.reviewed.json": None},
+                                                                 "source_identity": source_identity, "beats": beats}))
             (directory / "transcript.json").write_text(json.dumps({"words": [
                 {"word": "Tristana", "start": 0.2, "end": 0.5}, {"word": "mala", "start": 0.6, "end": 1.0}]}))
             frames_dir = directory / "frames" / "selected-game"
@@ -221,7 +380,7 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(len(candidates), 1)
             self.assertEqual(len(candidates[0]["segments"]), 2)
             self.assertEqual(ai.scenes[-1]["start"], 140)
-            self.assertEqual(json.loads((directory / "short-callback-proposals.json").read_text())["callback_version"], 1)
+            self.assertEqual(json.loads((directory / "short-callback-proposals.json").read_text())["callback_version"], 2)
 
     def test_short_gate_checks_spoken_hook_and_payoff_timing(self) -> None:
         words = [
@@ -294,6 +453,7 @@ class EditingTests(unittest.TestCase):
         self.assertIn("[hud]crop=iw*0.145:ih*0.028:iw*0.855:ih*0,scale=320:-2:flags=lanczos,setsar=1[hudout]", filters)
         self.assertIn("[gameout][hudout]overlay=x=W-w:y=0[gamehud]", filters)
         self.assertIn("fontsdir=", filters)
+        self.assertIn("[rawa]loudnorm,aresample=48000[a]", filters)
         self.assertAlmostEqual(1280 * 0.49 / 720, 1080 / 1240, delta=0.001)
         self.assertAlmostEqual(0.255 + 0.49 / 2, 0.5)
 
@@ -414,7 +574,7 @@ class EditingTests(unittest.TestCase):
             self.assertIn("Dialogue: 0,0:00:11.00,0:00:12.00,Caption", subtitles)
             self.assertNotIn("0:01:41.00", subtitles)
 
-    def test_long_jump_gets_distinct_centered_editor_label(self) -> None:
+    def test_long_jump_uses_dialogue_captions_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             (directory / "transcript.json").write_text(json.dumps({"words": [
@@ -426,9 +586,106 @@ class EditingTests(unittest.TestCase):
                 {"source_start": 200, "source_end": 210, "relative_start": 100, "relative_end": 110},
             ]}
             subtitles = _write_short_subtitles(directory, candidate).read_text()
-            self.assertIn("Style: Editor,Montserrat Black,78,&H00FFA95B&", subtitles)
-            self.assertIn(r"\an5\pos(540,960)}2 min después", subtitles)
+            self.assertNotIn("Style: Editor", subtitles)
+            self.assertNotIn("min después", subtitles)
             self.assertIn("Dialogue: 0,0:00:13.00,0:00:14.00,Caption", subtitles)
+
+    def test_stale_reviewed_candidates_fail_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            game = {"id": "game-001", "gameplay_start": 100, "gameplay_end": 200}
+            source = directory / "source.mp4"
+            source.write_bytes(b"source")
+            (directory / "games.json").write_text(json.dumps({"games": [game]}))
+            (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
+            (directory / "manifest.json").write_text(json.dumps({"source": str(source), "duration": 200}))
+            stat = source.stat()
+            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 10, "evidence_version": 3,
+                                                                            "cuts_version": 5, "callback_version": 2, "exclusions": [], "game_id": "game-001",
+                                                                            "gameplay_start": 100, "editorial_end": 200,
+                                                                            "transcript_edits": {"transcript.reviewed.json": None,
+                                                                                "short-transcript.json": None, "short-transcript.reviewed.json": None}, "source_identity": {
+                                                                                "path": str(source.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                                                                            "candidates": []}))
+            (directory / "short-candidates.reviewed.json").write_text(json.dumps({"game_id": "game-001", "candidates": []}))
+            with self.assertRaises(SystemExit):
+                short_candidates(directory)
+
+    def test_reviewed_short_cannot_extend_past_selected_game(self) -> None:
+        candidate = {"source_start": 190, "source_end": 210, "relative_start": 90, "relative_end": 110,
+                     "duration": 20, "segments": [{"source_start": 190, "source_end": 210,
+                                                     "relative_start": 90, "relative_end": 110}]}
+        with self.assertRaises(ValueError):
+            _validate_short_candidates([candidate], 100, 200, 300)
+
+    def test_short_refinement_makes_one_premise_preserving_request(self) -> None:
+        ai = AI(Path("."), mock=True)
+        ai.mock = False
+        candidate = {"title": "Original rant", "reason": "same subject", "hook": "hook", "payoff": "payoff"}
+        with patch.object(ai, "_json", return_value={"reject": True}) as request:
+            ai.refine_short(candidate, [], [])
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("Keep the SAME storyline", request.call_args.args[0])
+
+    def test_short_refinement_accepts_evidence_nested_in_segment(self) -> None:
+        words = [
+            {"word": "somos", "start": 10.0, "end": 10.4},
+            {"word": "malos", "start": 10.5, "end": 11.0},
+            {"word": "estamos", "start": 20.0, "end": 20.5},
+            {"word": "trolling", "start": 20.6, "end": 21.2},
+        ]
+        answer = {"title": "Trolling", "story": "self-own", "hook": "somos malos", "payoff": "estamos trolling",
+                  "segments": [{"start": 10, "end": 22,
+                                "hook_evidence": {"kind": "speech", "time": 10, "quote": "somos malos"},
+                                "payoff_evidence": {"kind": "speech", "time": 20, "quote": "estamos trolling"}}]}
+        result = _retime_short({"segments": [{"relative_start": 8, "relative_end": 24}]}, answer, words, [], 100, (8, 24))
+        self.assertIsNotNone(result)
+
+    def test_short_render_writes_matching_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "source.mp4"
+            source.write_bytes(b"source")
+            subtitles = directory / "short-v8-01.ass"
+            subtitles.write_text("captions")
+            caption_review = directory / "short-v8-01.captions.reviewed.json"
+            caption_review.write_text("{}")
+            candidate = {
+                "title": "Test", "render_name": "short-v8-01", "output_number": 1,
+                "source_start": 10, "source_end": 20, "relative_start": 0, "relative_end": 10,
+                "segments": [{"source_start": 10, "source_end": 20, "relative_start": 0, "relative_end": 10}],
+            }
+            (directory / "manifest.json").write_text(json.dumps({"source": str(source), "duration": 100}))
+            game = {"id": "game-001", "gameplay_start": 10, "gameplay_end": 100}
+            (directory / "games.json").write_text(json.dumps({"games": [game]}))
+            (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
+            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 10, "evidence_version": 3,
+                                                                            "cuts_version": 5, "callback_version": 2, "exclusions": [], "game_id": "game-001",
+                                                                            "gameplay_start": 10, "editorial_end": 100,
+                                                                            "transcript_edits": {"transcript.reviewed.json": None,
+                                                                                "short-transcript.json": None, "short-transcript.reviewed.json": None},
+                                                                            "candidates": [candidate]}))
+            (directory / "layout.json").write_text(json.dumps({"facecam": [0, 0, 0.25, 0.25]}))
+            stat = source.stat()
+            raw = json.loads((directory / "short-candidates.json").read_text())
+            raw["source_identity"] = {"path": str(source.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+            (directory / "short-candidates.json").write_text(json.dumps(raw))
+            def fake_render(*args: object) -> None:
+                output = args[5]
+                output.parent.mkdir(parents=True)
+                output.write_bytes(b"video")
+            with patch("milloclips.editing._write_short_subtitles", return_value=subtitles), \
+                    patch("milloclips.editing.render_vertical", side_effect=fake_render), \
+                    patch("milloclips.editing.media_info", return_value={"duration": 10, "width": 1080, "height": 1920, "audio": True}):
+                output = render_short(directory)
+            provenance = json.loads(output.with_suffix(".json").read_text())
+            self.assertEqual(provenance["expected_duration"], 10)
+            self.assertEqual(provenance["width"], 1080)
+            self.assertTrue(provenance["audio"])
+            self.assertIsNotNone(provenance["caption_review"])
+            self.assertIn("validated render", shorts_report(directory).read_text())
+            caption_review.write_text('{"changed": true}')
+            self.assertIn("render missing or stale", shorts_report(directory).read_text())
 
     def test_ass_captions_highlight_words_at_their_spoken_time(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

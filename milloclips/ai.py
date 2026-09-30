@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,13 +14,20 @@ from .io import write_json
 
 STATES = ["OTHER", "QUEUE", "CHAMP_SELECT", "LOADING", "IN_GAME", "POST_GAME"]
 BEAT_TYPES = ["SETUP", "COMBAT", "REACTION", "STRATEGY", "FARMING", "TRAVEL", "SHOPPING", "DEAD", "RESULT"]
+THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance"}
+THUMBNAIL_FILLER = {"a", "al", "como", "con", "de", "el", "en", "es", "esto", "fucking", "fck", "jugué", "jugue", "la", "locura", "me", "mi", "mí", "mira", "momento", "muy", "para", "pick", "que", "rarísimo", "si", "un", "una", "va", "volando", "yo"}
+THUMBNAIL_ACTOR = {"jugué", "jugue", "jugando", "me", "mi", "mí", "mío", "mio", "yo"}
+
+
+def _words(value: str) -> set[str]:
+    return set(re.findall(r"[a-záéíóúüñ0-9]+", value.casefold()))
 
 
 class AI:
-    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", mock: bool = False, shorts_model: str = "gpt-5-mini"):
+    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", mock: bool = False, shorts_model: str | None = None):
         self.vod_dir = vod_dir
         self.model = model
-        self.shorts_model = shorts_model
+        self.shorts_model = shorts_model or model
         self.mock = mock
         self.client = None if mock else OpenAI(api_key=self._key())
 
@@ -30,7 +38,7 @@ class AI:
             raise SystemExit("OPENAI_API_KEY is required for real analysis; use --mock for a local fixture run")
         return key
 
-    def _json(self, prompt: str, images: list[Path] | None = None, *, model: str | None = None) -> Any:
+    def _json(self, prompt: str, images: list[Path] | None = None, *, model: str | None = None, detail: str = "low") -> Any:
         model = model or self.model
         content: list[dict] = [{"type": "text", "text": prompt}]
         for image in images or []:
@@ -38,7 +46,7 @@ class AI:
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": "low"},
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": detail},
                 }
             )
         response = self.client.chat.completions.create(
@@ -177,23 +185,146 @@ Images are grouped in beat order, three images per beat.
 
     def plan_long(self, beats: list[dict]) -> dict:
         if self.mock:
-            return {"selected_ids": [beat["id"] for beat in beats if beat["keep"]], "story": "Synthetic game rough cut."}
+            selected = [beat for beat in beats if beat["keep"]]
+            scenes = []
+            for beat in selected:
+                if scenes and beat["id"] == scenes[-1]["end_beat_id"] + 1:
+                    scenes[-1]["end_beat_id"] = beat["id"]
+                else:
+                    scenes.append({"start_beat_id": beat["id"], "end_beat_id": beat["id"], "purpose": "synthetic scene"})
+            return {
+                "selected_ids": [beat["id"] for beat in selected],
+                "scenes": scenes,
+                "cold_open_beat_id": selected[-1]["id"] if selected else None,
+                "story": "Synthetic game rough cut.",
+            }
         compact = [
-            {key: beat[key] for key in ("id", "start", "end", "type", "importance", "text", "reason")}
+            {key: beat.get(key) for key in ("id", "start", "end", "phase", "type", "importance", "keep", "text", "reason")}
             for beat in beats
         ]
         parsed = self._json(
-            "Select chronological variable-length beats totaling 9-12 minutes for a coherent League video. "
-            "Open on meaningful speech or immediately understandable action, not obligatory first footage. "
-            "Build a complete arc across early, middle, and late game: premise, setup, escalation, major turns, "
-            "payoff, and the actual Nexus/result ending. Select complete adjacent scene runs with setup, action, "
-            "and reaction rather than isolated beats that begin or end mid-thought. Do not "
-            "select more than six consecutive beats. Exclude routine loading, travel, farming, shopping, and dead "
-            "time unless dialogue or setup makes it necessary. Return JSON only: "
-            '{"selected_ids":[0,1],"story":"one sentence"}. Beats:\n'
+            "Edit this Spanish League game into a compelling chronological YouTube story. Select COMPLETE SCENES "
+            "totaling about 8:40-10:50 before reusable channel cards are added. Every scene must contain a concrete "
+            "premise, setup, action, outcome, joke, reversal, or reaction; never add footage merely to cover equal "
+            "amounts of early/mid/late game. Exclude safe recalls, walking back to lane, routine farming, shopping, "
+            "respawn waits, repeated explanations, and action whose result is not included. Preserve short setup "
+            "before each action and its immediate outcome/reaction afterward. Include the pick/build premise, the "
+            "strongest varied moments, escalating stakes, and the actual final fight/result. Do not start or end a "
+            "scene mid-sentence. Scene ranges use inclusive adjacent beat IDs and should usually last 20-90 seconds. "
+            "Choose one later high-impact beat for a 5-20 second cold-open teaser; it will also remain in its normal "
+            "chronological scene. ElmilloR himself must be the active subject through his play, call, joke, or reaction; "
+            "never choose a teammate highlight while he is dead or spectating. Return JSON only: "
+            '{"scenes":[{"start_beat_id":0,"end_beat_id":3,"purpose":"specific story job"}],'
+            '"cold_open_beat_id":3,"story":"one sentence"}. Beats:\n'
             + json.dumps(compact, ensure_ascii=False)
         )
-        return {"selected_ids": parsed.get("selected_ids", []), "story": str(parsed.get("story", ""))}
+        scenes = parsed.get("scenes", []) if isinstance(parsed.get("scenes"), list) else []
+        selected_ids = [
+            beat["id"]
+            for scene in scenes if isinstance(scene, dict)
+            for beat in beats
+            if type(scene.get("start_beat_id")) is int and type(scene.get("end_beat_id")) is int
+            and scene["start_beat_id"] <= beat["id"] <= scene["end_beat_id"]
+        ]
+        return {
+            "scenes": scenes,
+            "selected_ids": selected_ids,
+            "cold_open_beat_id": parsed.get("cold_open_beat_id"),
+            "story": str(parsed.get("story", "")),
+        }
+
+    def refine_long_scene(self, scene: dict, beats: list[dict], words: list[dict], frames: list[dict], *, cold_open: bool) -> dict:
+        if self.mock:
+            answer = {"start": scene["start"], "end": scene["end"], "reason": "synthetic boundaries"}
+            if cold_open:
+                answer.update({"cold_open_start": scene["start"], "cold_open_end": min(scene["end"], scene["start"] + 20)})
+            return answer
+        return self._json(
+            "Return JSON only. Set precise source boundaries for this already-selected long-form League scene. "
+            "Timestamps are seconds from GAME START. Frames are one-second stills, not continuous video. Start just "
+            "before the necessary spoken premise or visible action, never during an exchange. End after the concrete "
+            "outcome and immediate reaction, never before a kill/fight resolves or mid-sentence. Aggressively remove "
+            "safe recall channels, shopping, walking to lane, waiting, and dead tails. Keep enough setup that a viewer "
+            "understands why the action matters. The returned start/end must stay inside allowed_region. "
+            + ("Also choose the complete most amazing or punchy 5-20 second ElmilloR moment as "
+               "cold_open_start/cold_open_end. ElmilloR himself must be the active subject through his play, call, joke, "
+               "or reaction; never choose a teammate highlight while he is dead or spectating. It must contain visible "
+               "action or an immediately compelling line and its payoff; never choose walking, waiting, setup without "
+               "action, or an uneventful reaction. " if cold_open else "")
+            + "Return {\"start\":12.0,\"end\":45.0,\"reason\":\"...\""
+            + (",\"cold_open_start\":30.0,\"cold_open_end\":37.0" if cold_open else "")
+            + "}. Scene: " + json.dumps(scene, ensure_ascii=False)
+            + ". Beats: " + json.dumps(beats, ensure_ascii=False)
+            + ". Timestamped words: " + json.dumps(words, ensure_ascii=False)
+            + ". Supplied frame timestamps: " + json.dumps([frame["timestamp"] for frame in frames]),
+            [Path(frame["path"]) for frame in frames],
+        )
+
+    def thumbnail_concepts(self, beats: list[dict], story: str, images: list[Path]) -> list[dict]:
+        if self.mock:
+            choices = [("ME PASÓ ESTO", "action", "shocked"),
+                       ("JUGUÉ ESTO", "identity", "hold-on"),
+                       ("ME VOLVIÓ LOCO", "action", "hyped")]
+            return [
+                {"title": headline.title(), "headline": headline, "hook": "high-stakes/amazing moment",
+                 "template": template, "expression": expression, "beat_id": beats[index % len(beats)]["id"]}
+                for index, (headline, template, expression) in enumerate(choices)
+            ] if beats else []
+        evidence = [{key: beat.get(key) for key in ("id", "type", "importance", "text", "reason")} for beat in beats]
+        prompt = """
+Create exactly three distinct Spanish YouTube title/thumbnail concepts for this FINAL League edit.
+For hook, use EXACTLY one of these strings: "high-stakes/amazing moment",
+"unusual pick/role/challenge", "bold claim/strategy", "extremely good performance".
+A strategy can claim it works only when the evidence proves its payoff. Do not turn a hypothetical
+("podría", "casi", "si") into an achieved result. Headlines are 2-4 Spanish words, all-caps-friendly,
+punchy editorial paraphrases. Every specific noun or claim in both title and headline must appear
+verbatim in the cited evidence; only generic words such as MIRA, ESTO, MOMENTO, QUÉ, and LOCURA may
+be added. Both title and headline must relate the event to Elmiillor in first person (JUGUÉ, ME, MI,
+YO); never use a bare enemy or teammate champion as the subject. Titles complement rather than repeat
+the headline. Use template action, identity, or strategy.
+Expressions: shocked for stakes, hold-on for unusual/challenge, hyped for strategy/performance,
+smiling for satisfying payoff. Cite a supplied beat_id. Return JSON only:
+Each concept must include evidence: an exact short phrase copied from its cited beat's spoken text.
+If a supplied beat cannot support a concise truthful concept, omit it rather than guessing.
+{"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","expression":"shocked","beat_id":1,"evidence":"exact copied phrase","champion":"Fiddlesticks"}]}
+        Story: """ + story + "\nEvidence:\n" + json.dumps(evidence, ensure_ascii=False)
+        parsed = self._json(prompt, images)
+        write_json(self.vod_dir / "thumbnail-concepts.raw.json", parsed)
+        valid_ids = {beat["id"] for beat in beats}
+        output = []
+        by_id = {beat["id"]: beat for beat in beats}
+        for concept in parsed.get("concepts", []):
+            if concept.get("beat_id") not in valid_ids:
+                continue
+            headline = str(concept.get("headline", "")).strip()[:40]
+            if not headline or len(headline.split()) > 4:
+                continue
+            evidence = str(concept.get("evidence", "")).strip()[:160]
+            source = _words(str(by_id[concept["beat_id"]].get("text", "")))
+            cited = _words(evidence)
+            title = str(concept.get("title", headline)).strip()[:100]
+            claims = _words(f"{title} {headline}") - THUMBNAIL_FILLER
+            if not evidence or not cited & source or any(not any(word.startswith(term) or term.startswith(word) for word in source) for term in claims):
+                continue
+            if concept.get("hook") not in THUMBNAIL_HOOKS or concept.get("template") not in {"action", "identity", "strategy"}:
+                continue
+            if concept.get("expression") not in {"shocked", "hold-on", "hyped", "smiling"}:
+                continue
+            if {"podria", "podría", "casi", "si"} & cited and concept["hook"] in {"high-stakes/amazing moment", "extremely good performance"}:
+                continue
+            if not _words(f"{title} {headline}") & THUMBNAIL_ACTOR:
+                continue
+            output.append({
+                "title": title,
+                "headline": headline.upper(),
+                "hook": str(concept.get("hook", "")).strip()[:120],
+                "template": str(concept.get("template", "action")).strip(),
+                "expression": str(concept.get("expression", "shocked")).strip(),
+                "beat_id": concept["beat_id"],
+                "evidence": evidence,
+                "champion": str(concept.get("champion", "")).strip() if str(concept.get("champion", "")).isalnum() else "",
+            })
+        return output[:3]
 
     def shorts(self, beats: list[dict]) -> list[dict]:
         evidence = [
@@ -225,10 +356,11 @@ Images are grouped in beat order, three images per beat.
                 "Start with the ACTUAL payoff: a spectacular play, disastrous blunder, unexpected reversal, "
                 "or a funny contradiction/confession. Quote its exact speech if present. "
                 "An ordinary recall, tactical comment, cooldown, item, objective plan, retreat, or mention of "
-                "a kill is NOT an event without an exceptional visible or spoken outcome. Return zero if none. "
+                "a kill is NOT an event without an exceptional visible or spoken outcome. A strong rant is valid "
+                "only when it has an immediately quotable hook and escalates to a sharper punchline. Return zero if none. "
                 "Beat labels and importance may be wrong. Give the ID of the beat containing the payoff. "
-                "Use one continuous scene for a play, or 3-7 chronological scenes only for a real callback. "
-                "Each scene uses inclusive beat IDs; trim to 8-90 seconds later. "
+                "Use one continuous scene for a play, or 2-4 chronological scenes only for a real callback. "
+                "Each scene uses inclusive beat IDs; target 20-45 seconds and never exceed 60 after trimming. "
                 "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"specific event\","
                 "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
                 + json.dumps(window, ensure_ascii=False), model=self.shorts_model,
@@ -239,8 +371,8 @@ Images are grouped in beat order, three images per beat.
         parsed = self._json(
             "Return JSON only. Find at most TWO surprising or hilarious callbacks across this League game. "
             "An actual ending must overturn or deliver on an earlier premise; no generic game recaps, "
-            "plans, or unrelated highlights. Zero is fine. Use 3-7 short chronological scenes, "
-            "8-90 seconds total after trimming, and identify the exact payoff beat. "
+            "plans, or unrelated highlights. Zero is fine. Use 2-4 short chronological scenes, "
+            "target 20-45 seconds and never exceed 60 after trimming, and identify the exact payoff beat. "
             "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"...\","
             "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
             + json.dumps(evidence, ensure_ascii=False), model=self.shorts_model,
@@ -253,7 +385,7 @@ Images are grouped in beat order, three images per beat.
         if self.mock:
             return []
         parsed = self._json(
-            "Return JSON only. The source transcript in this part of a League game is corrupted. "
+            "Return JSON only. Coarsely scout this part of a League game using ordered still images. "
             "These still images are in time order, not continuous video. Find at most ONE genuinely "
             "exceptional VISUAL Short where the streamer's champion visibly makes a decisive play, or "
             "an unmistakably surprising outcome occurs on screen. Use before/after frames as evidence. "
@@ -278,8 +410,8 @@ Images are grouped in beat order, three images per beat.
             "dead. Credit kills only if the images prove who got them; a team ace is not an individual "
             "multikill. Avoid unrelated highlights or fabricated reactions. If no specific three-act "
             "story with a beginning and ending is evidenced, return no candidates. If one exists, "
-            "pick 3-7 BRIEF chronological beat ranges: spoken premise, turn/setback, visual payoff. "
-            "The total selected footage should fit 8-90 seconds after trimming. Give payoff_beat_id "
+            "pick 2-4 BRIEF chronological beat ranges: spoken premise, turn/setback, visual payoff. "
+            "The total selected footage should target 20-45 seconds and never exceed 60 after trimming. Give payoff_beat_id "
             "as the REAL beat ID containing the visible outcome in the final scene, NEVER an example ID. "
             "Return a JSON object with candidates array, each having title, proposed_payoff, "
             "payoff_beat_id, and scenes array of start_beat_id/end_beat_id pairs. "
@@ -319,7 +451,7 @@ Images are grouped in beat order, three images per beat.
             "that needs a title to become interesting. Do NOT invent wins, kills or abilities from dialogue. "
             "If the hook cannot be HEARD or SEEN within the first 2 seconds of the actual cut, reject. "
             "If the payoff is not evidenced near the end of the cut, reject. A spoken self-correction can "
-            "be a payoff. Return {\"reject\":true} if either fails. No scores. Otherwise return JSON "
+            "be a payoff. Return {\"reject\":true,\"reason\":\"one sentence\"} if either fails. No scores. Otherwise return JSON "
             "fields title, story, hook, payoff, segments (start and end in seconds), hook_evidence and "
             "payoff_evidence. Prefer an EXACT SPOKEN phrase when available. Each evidence object has "
             "kind 'speech' or 'visual', time (seconds relative to "
@@ -333,12 +465,15 @@ Images are grouped in beat order, three images per beat.
             "unless the kill feed explicitly credits them; a team ACE with that teammate alive is enough. "
             "Times are relative to GAME START, NOT the beginning of a scene; every segment must be inside "
             "its proposed scene range. Start with real action/speech; cut immediately after the payoff. "
-            "Keep 1 scene for a self-contained play, or 2-7 for an arc; never pad to reach a scene count. "
+            "A strong rant may pass only with a quotable opening and clear escalation or punchline. "
+            "Keep 1 scene for a self-contained play, or 2-4 for an arc; never pad to reach a scene count. "
+            "Target 20-45 seconds and never exceed 60. Long time jumps must be self-evident from repeated "
+            "wording, champion identity, or visible context because no editorial time labels will be added. "
             f"Proposal: {json.dumps(proposal, ensure_ascii=False)}. "
             f"Beats: {json.dumps(beats, ensure_ascii=False)}. "
             f"Images in order: {json.dumps([frame['timestamp'] for frame in frames])}",
             [Path(frame["path"]) for frame in frames],
-            model=self.shorts_model,
+            model=self.shorts_model, detail="high",
         )
 
     def choose_shorts(self, candidates: list[dict], images: list[Path]) -> list[int]:
@@ -350,6 +485,8 @@ Images are grouped in beat order, three images per beat.
             "and is the payoff actually funny, amazing, or surprising? Prefer a remarkable moment over "
             "ordinary but coherent commentary. The supplied images are hook then payoff for each candidate "
             "in order, two images per candidate. Do not reward titles or claims unsupported by evidence. "
+            "An expressive facecam or vocal reaction is a bonus, not a requirement. When quality is close, "
+            "prefer a varied pair such as one personality/rant clip and one gameplay/reversal clip. "
             "Choose ZERO if none are genuinely entertaining; do not fill a quota. "
             "Return {\"selected_ids\":[0,1],\"reason\":\"why these beat the alternatives\"}. "
             "Candidate evidence (zero-based IDs): " + json.dumps(candidates, ensure_ascii=False),
@@ -364,27 +501,7 @@ Images are grouped in beat order, three images per beat.
                 "title": candidate["title"], "story": candidate["reason"],
                 "hook": candidate["hook"], "payoff": candidate["payoff"],
                 "hook_evidence": candidate["hook_evidence"], "payoff_evidence": candidate["payoff_evidence"],
-            }
-        reversal = self._json(
-            "Return JSON only. Find a FUNNY CONTRADICTION with THREE ACTS from the SAME speaker: "
-            "1 a confident prediction that X is impossible, 2 X happens, 3 the speaker explicitly "
-            "self-critiques his OWN reasoning. Choose the MOST absolute impossible-prediction as hook. "
-            "The punchline MUST be the final FIRST-PERSON admission that his own understanding was "
-            "mistaken, NOT the first sign of X, not a death or win, and not a justification of why an "
-            "opponent did X. If no first-person admission, return {\"reject\":true}. "
-            "Quote exact short consecutive speech for ALL three acts as "
-            "{\"prediction_quote\":\"...\",\"event_quote\":\"...\",\"correction_quote\":\"...\"}. "
-            "Words: " + json.dumps(words, ensure_ascii=False), model=self.shorts_model,
-        )
-        if all(isinstance(reversal.get(key), str) and reversal[key].strip() for key in ("prediction_quote", "event_quote", "correction_quote")):
-            prediction, event, correction = (reversal[key] for key in ("prediction_quote", "event_quote", "correction_quote"))
-            return {
-                "title": f"{prediction}... {correction}",
-                "story": f"{prediction} → {event} → {correction}",
-                "hook": prediction, "payoff": correction,
-                "hook_evidence": {"kind": "speech", "quote": prediction},
-                "event_evidence": {"kind": "speech", "quote": event},
-                "payoff_evidence": {"kind": "speech", "quote": correction},
+                "segments": [{"start": item["relative_start"], "end": item["relative_end"]} for item in candidate.get("segments", [])],
             }
         return self._json(
             "Return JSON only. This is a FINAL EDIT REVIEW for a YouTube Short, not a request to describe "
@@ -397,8 +514,12 @@ Images are grouped in beat order, three images per beat.
             "proof of a great play. If the images do not show an unmistakable high-impact result or a "
             "genuine funny self-own, reject. Never claim an ult, multikill, win or death unless visibly "
             "confirmed by the provided images. A weak moment cannot be saved by a dramatic title. "
-            "Return {\"reject\":true} if this story would not stop a stranger scrolling. Otherwise "
-            "choose the strongest self-contained 8-90 second edit of the SAME story. Return title, story, hook, payoff, "
+            "A strong rant may pass when its opening is immediately quotable and its ending clearly escalates "
+            "or lands a sharper punchline; repeated blame without a turn fails. Return {\"reject\":true} if this "
+            "story would not stop a League viewer scrolling. Otherwise choose the strongest self-contained "
+            "20-45 second edit of the SAME story, with an absolute range of 8-60 seconds. For a multi-scene candidate, "
+            "return the same number of chronological segments, each trimmed inside its corresponding rough segment; "
+            "do not bridge source gaps. Return title, story, hook, payoff, segments with start/end, "
             "hook_evidence and payoff_evidence. For speech evidence give kind='speech', time and a SHORT "
             "EXACT quote copied from the supplied timestamped words. For a visual change give kind='visual', "
             "before_time, time and detail of the change in the supplied timestamped images. Both pieces "
@@ -406,12 +527,12 @@ Images are grouped in beat order, three images per beat.
             f"Rough candidate: {json.dumps(candidate, ensure_ascii=False)}. "
             f"Words: {json.dumps(words, ensure_ascii=False)}. "
             f"Images in order: {json.dumps([frame['timestamp'] for frame in frames])}",
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model,
+            [Path(frame["path"]) for frame in frames], model=self.shorts_model, detail="high",
         )
 
     def audit_short(self, candidate: dict, words: list[dict], frames: list[dict]) -> dict:
         if self.mock:
-            return {"keep": True}
+            return {"keep": True, "class": "synthetic", "reason": "Synthetic fixture passes the quality gate"}
         return self._json(
             "Return JSON only. HARSH SHORTS QUALITY GATE. These timestamped frames span the ENTIRE "
             "proposed final edit in order. Judge only what happens INSIDE this cut, not the title or "
@@ -422,12 +543,15 @@ Images are grouped in beat order, three images per beat.
             "the mistake IN THIS CUT. An earlier insult about a named teammate can also pay off if that "
             "teammate visibly survives and helps win a decisive fight while the streamer is dead; a "
             "team ace does NOT prove who got each kill. Transient banners must be VISIBLE in a supplied "
-            "frame at the cited timestamp, not inferred from a later push. Ignore repeated single-letter transcript garbage. "
-            "Otherwise reject. Return {\"keep\":true/false,\"reason\":\"one sentence\"}. "
+            "frame at the cited timestamp, not inferred from a later push. Also keep a strong rant only when "
+            "it opens with an immediately quotable line and visibly or vocally escalates to a sharper punchline; "
+            "repeating the same complaint is not escalation. Ignore repeated single-letter transcript garbage. "
+            "Classify kept clips as reversal, self-own, escalation, visual-highlight, or rant. Otherwise reject. "
+            "Return {\"keep\":true/false,\"class\":\"...\",\"reason\":\"one sentence\"}. "
             f"Candidate: {json.dumps(candidate, ensure_ascii=False)}. "
             f"Words in cut: {json.dumps(words, ensure_ascii=False)}. "
             f"Frames in order: {json.dumps([frame['timestamp'] for frame in frames])}",
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model,
+            [Path(frame["path"]) for frame in frames], model=self.shorts_model, detail="high",
         )
 
     def detect_layout(self, frame: Path) -> dict:

@@ -16,12 +16,13 @@ for the current real run. Optimize for fast learning before production polish.
 
 - Follow YAGNI: do not build speculative features or abstractions.
 - Follow KISS: prefer the simplest correct implementation that meets the current goal.
+- Use `bun`, never npm/pnpm/yarn, for the website.
 - Use `gpt-5-nano` for development AI roles.
 - Keep arithmetic, timestamps, duration limits, and media validation in code.
 - Cache each stage; prompt changes must not redownload or retranscribe media.
 - Keep raw model output separate from reviewed corrections.
 - Long-form and Iteration 0 shorts come from the selected game. Whole-VOD short discovery is deferred.
-- Do not build the website, queues, a vector database, or automatic publishing.
+- Do not build queues, a vector database, or automatic publishing.
 - Upgrade a model only after a reviewed Nano-vs-stronger-model comparison.
 
 ## Verify
@@ -29,6 +30,12 @@ for the current real run. Optimize for fast learning before production polish.
 ```bash
 uv run python -m unittest discover -s tests -v
 uv run milloclips --help
+```
+
+The public gallery is a separate SvelteKit app in `website/`:
+
+```bash
+cd website && bun install && bun run check && bun run test
 ```
 
 For media integration, run the synthetic fixture command documented by

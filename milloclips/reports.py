@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from .editing import short_candidates
+from .editing import _file_fingerprint, _fingerprint, _media_fingerprint, short_candidates
 from .io import format_time, read_json
 
 
@@ -27,6 +27,7 @@ main{padding-block:32px 72px}.stories{display:grid;gap:16px}.story,.game{backgro
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px}
 .game img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px;margin-top:20px}
 .game .facts{margin-top:18px}.empty{padding:32px;border:1px dashed var(--line);border-radius:8px;color:var(--muted)}
+.evidence{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:18px}.evidence img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px}.status{display:inline-block;margin-top:10px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em}.status.valid{border-color:var(--accent);color:var(--accent)}
 .timeline{display:flex;height:26px;margin-top:26px;border-radius:4px;overflow:hidden;background:var(--line)}
 .slice{min-width:2px}.IN_GAME{background:var(--accent)}.CHAMP_SELECT{background:oklch(70% .12 235)}.LOADING{background:oklch(79% .13 70)}.POST_GAME{background:oklch(69% .16 25)}.OTHER,.QUEUE{background:var(--line)}
 .legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;color:var(--muted);font-size:.84rem}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
@@ -67,13 +68,48 @@ def scan_report(vod_dir: Path) -> Path:
 
 def shorts_report(vod_dir: Path) -> Path:
     candidates = short_candidates(vod_dir)
-    cards = [
-        f"""<article class="story"><div class="story-head"><span class="rank">{index:02d}</span><div class="story-content"><h2>{html.escape(item['title'])}</h2><p class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])} · {format_time(item.get('duration', item['source_end'] - item['source_start']))} edited · {len(item.get('segments', [item]))} scene(s){f" · {html.escape(item['render_name'])}.mp4" if 'render_name' in item else f" · short-{item['output_number']:02d}.mp4" if 'output_number' in item else ''}</p></div></div>
-{f'<dl class="facts"><div class="fact"><dt>Hook</dt><dd>{html.escape(item["hook"])}</dd></div><div class="fact"><dt>Payoff</dt><dd>{html.escape(item["payoff"])}</dd></div></dl>' if item.get('hook') and item.get('payoff') else f'<p class="summary">{html.escape(item["reason"])}</p>'}
-<p class="segments">Source cuts: <span>{' · '.join(f"{format_time(segment['source_start'])}–{format_time(segment['source_end'])}" for segment in item.get('segments', [item]))}</span>{f" · Score {item['score']}" if 'score' in item else ''}</p></article>"""
-        for index, item in enumerate(candidates, 1)
-    ]
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><p class="label">Shorts review</p><h1>Story candidates</h1><p class="dek">{len(candidates)} ranked stories from the selected game. Times refer to the source VOD; edited length excludes gaps between scenes.</p></header><main><div class="stories">{''.join(cards) if cards else '<div class="empty">No candidates found. Check the short discovery output before rendering.</div>'}</div></main></body></html>"""
+    manifest = read_json(vod_dir / "manifest.json")
+    source = Path(manifest["source"])
+    source_stat = source.stat()
+    layout_path = vod_dir / "layout.reviewed.json" if (vod_dir / "layout.reviewed.json").exists() else vod_dir / "layout.json"
+    layout = read_json(layout_path)
+    diagnostics_path = vod_dir / "short-diagnostics.json"
+    diagnostics = read_json(diagnostics_path) if diagnostics_path.exists() else {}
+    cards = []
+    for index, item in enumerate(candidates, 1):
+        render_name = item.get("render_name") or f"short-{item.get('output_number', index):02d}"
+        sidecar_path = vod_dir / "renders" / f"{render_name}.json"
+        render_path = vod_dir / "renders" / f"{render_name}.mp4"
+        captions_path = vod_dir / f"{render_name}.ass"
+        specific_review = vod_dir / f"{render_name}.captions.reviewed.json"
+        caption_review = specific_review if specific_review.exists() else vod_dir / "short-captions.reviewed.json"
+        sidecar = read_json(sidecar_path) if sidecar_path.exists() else {}
+        expected_duration = sum(segment["source_end"] - segment["source_start"] for segment in item.get("segments") or [item])
+        valid_render = render_path.exists() and sidecar.get("render_version") == 1 \
+            and sidecar.get("output") == _media_fingerprint(render_path) and sidecar.get("candidate") == _fingerprint(item) \
+            and sidecar.get("captions") == _file_fingerprint(captions_path) and sidecar.get("layout") == _fingerprint(layout) \
+            and sidecar.get("caption_review") == _file_fingerprint(caption_review) \
+            and sidecar.get("source") == {"path": str(source.resolve()), "size": source_stat.st_size, "mtime_ns": source_stat.st_mtime_ns} \
+            and abs(float(sidecar.get("expected_duration", -1)) - expected_duration) <= 0.01 \
+            and abs(float(sidecar.get("duration", -1)) - expected_duration) <= 0.5 \
+            and sidecar.get("width") == 1080 and sidecar.get("height") == 1920 and sidecar.get("audio") is True
+        images = [Path(path).resolve() for path in item.get("evidence_images", []) if Path(path).exists()]
+        evidence_html = '<div class="evidence">' + "".join(
+            f'<img src="{image.as_uri()}" alt="Hook or payoff evidence">' for image in images
+        ) + "</div>" if images else ""
+        cards.append(
+            f"""<article class="story"><div class="story-head"><span class="rank">{index:02d}</span><div class="story-content"><h2>{html.escape(item['title'])}</h2><p class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])} · {format_time(item.get('duration', item['source_end'] - item['source_start']))} edited · {len(item.get('segments', [item]))} scene(s) · {html.escape(render_name)}.mp4</p><span class="status{' valid' if valid_render else ''}">{'validated render' if valid_render else 'render missing or stale'}</span></div></div>
+<dl class="facts"><div class="fact"><dt>Hook</dt><dd>{html.escape(item.get('hook', ''))}</dd></div><div class="fact"><dt>Payoff</dt><dd>{html.escape(item.get('payoff', ''))}</dd></div><div class="fact"><dt>Class</dt><dd>{html.escape(item.get('quality_class', 'unclassified'))}</dd></div><div class="fact"><dt>Gate</dt><dd>{html.escape(item.get('gate_reason', ''))}</dd></div></dl>
+<p class="segments">Source cuts: <span>{' · '.join(f"{format_time(segment['source_start'])}–{format_time(segment['source_end'])}" for segment in item.get('segments', [item]))}</span></p>{evidence_html}</article>"""
+        )
+    rejected = "".join(
+        f'<article class="story"><p class="eyebrow">{html.escape(str(item.get("stage", "gate")))}</p><h2>{html.escape(str(item.get("title", "Untitled")))}</h2><p class="summary">{html.escape(str(item.get("reason", "Rejected")))}</p></article>'
+        for item in diagnostics.get("rejected", [])
+    )
+    summary = (f"{diagnostics.get('proposal_count', 0)} proposals · {diagnostics.get('verified_count', 0)} verified · "
+               f"{diagnostics.get('gated_count', 0)} passed gates · {len(candidates)} selected")
+    rejected_section = f'<h1 style="margin:48px 0 18px">Rejected</h1><div class="stories">{rejected}</div>' if rejected else ""
+    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><p class="label">Shorts diagnostics</p><h1>Selected stories</h1><p class="dek">{summary}. Times refer to the source VOD; edited length excludes gaps between scenes.</p></header><main><div class="stories">{''.join(cards) if cards else '<div class="empty">No candidate cleared the automatic quality gates.</div>'}</div>{rejected_section}</main></body></html>"""
     output = vod_dir / "reports" / "short-candidates.html"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(body, encoding="utf-8")

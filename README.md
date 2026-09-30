@@ -47,8 +47,9 @@ uv run milloclips select workspace/<vod-id> game-001
 uv run milloclips analyze workspace/<vod-id>
 uv run milloclips plan-long workspace/<vod-id>
 uv run milloclips render-long workspace/<vod-id>
+uv run milloclips review-long workspace/<vod-id>
 uv run milloclips find-shorts workspace/<vod-id>
-uv run milloclips render-short workspace/<vod-id>
+uv run milloclips render-shorts workspace/<vod-id>
 uv run milloclips thumbnails workspace/f1ca1ecfc69f
 ```
 
@@ -56,18 +57,33 @@ Use `--mock` on AI commands to exercise the pipeline without API calls. Every
 stage caches JSON artifacts under its VOD directory. Delete only the artifact
 for the stage that should be rerun, or pass `--force`.
 
-`thumbnails` creates six layouts from real cached selected-game frames and a
-contact sheet under `renders/thumbnails/`. No AI-generated Rift backgrounds are
-used. Riot Data Dragon item, champion, and rune icons are fetched only for
-layouts that need them and cached in the same folder. Add streamer
-reaction cutouts to `assets/faces/` (see its README) to replace the foreground
-silhouettes; no stream facecam crop is used. The selected long cut mentions
-Zeke's Convergence, so thumbnails use its official Riot Data Dragon icon
-instead of guessing an item from screenshot pixels.
+`plan-long` selects complete story scenes and caches its raw local boundary
+decisions in `long-cuts.json`; optional corrections belong in
+`long-cuts.reviewed.json`. `render-long` adds a punchy verified cold open of up to
+20 seconds, a 2-second animated `ElmilloR` website-icon bumper, and a 12-second
+Fiddlesticks trailer end card after the final result. Reusable MP4 masters and
+their source media live under `assets/long/`; per-video `renders/` contains only
+rendered video outputs.
+`review-long` renders four seconds around every join into
+`renders/long-transitions.mp4` and records labeled output times in
+`long-review.json` for fast transition QA.
+
+`thumbnails` creates three evidence-backed title/thumbnail concepts from the
+selected final edit, ranks them, and writes the winner to `renders/thumbnail.png`.
+The contact sheet, candidate scores, and cached `thumbnail-brief.json` remain
+under `renders/thumbnails/` for optional review. No AI-generated Rift
+backgrounds are used. Add streamer reaction cutouts to `assets/faces/` (see its
+README); no stream facecam crop is used. Official Riot icons are optional and
+must be relevant to the evidenced hook.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for artifact contracts.
 
+## Website
+
+The public gallery lives in [`website/`](website/) and is a separate SvelteKit
+app reading `static/catalog.json`. See [`website/README.md`](website/README.md).
+Automatic game ranking and polished effects are still deferred.
+
 ## Status
 
-Iteration 0 is under active development. Automatic game ranking, polished
-effects, and the website are intentionally deferred.
+Iteration 0 is under active development.

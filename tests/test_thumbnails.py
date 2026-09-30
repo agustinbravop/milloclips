@@ -1,5 +1,6 @@
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,11 +8,64 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from milloclips.thumbnails import REACTIONS, VARIANTS, _game_asset, _reaction_photo, render_thumbnails
+from milloclips.ai import AI
+from milloclips.thumbnails import _game_asset, _reaction_photo, render_thumbnails
 
 
 class ThumbnailTests(unittest.TestCase):
-    def test_six_variants_use_cached_icons_and_actual_frames(self):
+    def test_concepts_reject_words_not_grounded_in_their_beat_evidence(self):
+        ai = object.__new__(AI)
+        ai.mock = False
+        ai.vod_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ai.vod_dir)
+        ai._json = lambda *_args, **_kwargs: {"concepts": [{
+            "title": "Dragón decisivo", "headline": "DRAGÓN DECISIVO", "hook": "high-stakes/amazing moment",
+            "template": "action", "expression": "shocked", "beat_id": 7, "evidence": "pelea final",
+        }]}
+        beats = [{"id": 7, "type": "COMBAT", "importance": 5,
+                  "text": "Fiddlesticks support gana la pelea final", "reason": "Final fight wins the game"}]
+        self.assertEqual(ai.thumbnail_concepts(beats, "Fiddlesticks support wins", []), [])
+
+    def test_concepts_reject_titles_not_grounded_in_their_beat_evidence(self):
+        ai = object.__new__(AI)
+        ai.mock = False
+        ai.vod_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ai.vod_dir)
+        ai._json = lambda *_args, **_kwargs: {"concepts": [{
+            "title": "Fiddlesticks decisivo", "headline": "MOMENTO FIDDLE", "hook": "high-stakes/amazing moment",
+            "template": "action", "expression": "shocked", "beat_id": 7, "evidence": "Fiddlesticks support",
+        }]}
+        beats = [{"id": 7, "type": "COMBAT", "importance": 5,
+                  "text": "Fiddlesticks support gana la pelea final", "reason": "Final fight wins the game"}]
+        self.assertEqual(ai.thumbnail_concepts(beats, "Fiddlesticks support wins", []), [])
+
+    def test_concepts_reject_hypotheticals_as_performance(self):
+        ai = object.__new__(AI)
+        ai.mock = False
+        ai.vod_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ai.vod_dir)
+        ai._json = lambda *_args, **_kwargs: {"concepts": [{
+            "title": "Podría ganar", "headline": "PODRÍA GANAR", "hook": "extremely good performance",
+            "template": "action", "expression": "hyped", "beat_id": 7, "evidence": "podría ganar",
+        }]}
+        beats = [{"id": 7, "type": "COMBAT", "importance": 5,
+                  "text": "podría ganar la pelea", "reason": "Potential fight"}]
+        self.assertEqual(ai.thumbnail_concepts(beats, "Potential fight", []), [])
+
+    def test_concepts_reject_copy_without_elmiillor_as_the_subject(self):
+        ai = object.__new__(AI)
+        ai.mock = False
+        ai.vod_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ai.vod_dir)
+        ai._json = lambda *_args, **_kwargs: {"concepts": [{
+            "title": "Tristana W", "headline": "TRISTANA RESET W", "hook": "bold claim/strategy",
+            "template": "action", "expression": "hyped", "beat_id": 7, "evidence": "Tristana reset W",
+        }]}
+        beats = [{"id": 7, "type": "COMBAT", "importance": 5,
+                  "text": "Tristana reset W", "reason": "Visible reset"}]
+        self.assertEqual(ai.thumbnail_concepts(beats, "Tristana reset", []), [])
+
+    def test_three_generic_variants_use_only_final_edit_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             vod = root / "vod"
@@ -19,36 +73,26 @@ class ThumbnailTests(unittest.TestCase):
             frames.mkdir(parents=True)
             faces = root / "faces"
             faces.mkdir()
-            (vod / "manifest.json").write_text(json.dumps({"metadata": {
-                "input": "https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee-746f6398ad8e"}}))
-            (vod / "long-plan.json").write_text(json.dumps({"game_id": "game-002", "selected_ids": [-1]}))
-            (vod / "beats.json").write_text(json.dumps({"beats": [{"id": -1, "text": "Porque existe un ítem llamado Zeke"}]}))
-            item = vod / "renders" / "thumbnails" / "asset-item-3050.png"
-            item.parent.mkdir(parents=True)
-            Image.new("RGB", (64, 64), "#ffc33b").save(item)
-            Image.new("RGB", (64, 64), "#76ccff").save(item.parent / "asset-champion-Fiddlesticks.png")
-            Image.new("RGB", (64, 64), "red").save(item.parent / "raw-01-obsolete.png")
-            Image.new("RGB", (64, 64), "red").save(item.parent / "01-comeback.png")
-            for number in {185, *(variant[1] for variant in VARIANTS)}:
+            (vod / "long-plan.json").write_text(json.dumps({"game_id": "game-002", "selected_ids": [1, 3], "story": "A strange pick wins."}))
+            (vod / "beats.json").write_text(json.dumps({"target_beat_seconds": 15, "beats": [
+                {"id": 0, "start": 0, "importance": 1, "type": "FARMING"},
+                {"id": 1, "start": 15, "importance": 5, "type": "COMBAT"},
+                {"id": 2, "start": 30, "importance": 1, "type": "FARMING"},
+                {"id": 3, "start": 45, "importance": 4, "type": "REACTION"}]}))
+            for number in range(12):
                 Image.new("RGB", (96, 54), "#543267").save(frames / f"frame_{number:06d}.jpg")
-            for expression in set(REACTIONS):
+            for expression in ("shocked", "hold-on", "hyped", "smiling"):
                 Image.new("RGBA", (80, 80), "red").save(faces / f"{expression}.png")
-            with patch("milloclips.thumbnails.urlopen", side_effect=AssertionError("Icons should be cached")):
-                sheet = render_thumbnails(vod, faces)
-                render_thumbnails(vod, faces)
+            sheet = render_thumbnails(vod, faces, ai=AI(vod, mock=True))
+            render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             with Image.open(sheet) as contact:
-                self.assertEqual(contact.size, (1480, 690))
+                self.assertEqual(contact.size, (1480, 350))
             self.assertEqual(sheet.parent, vod / "renders" / "thumbnails")
-            self.assertFalse((sheet.parent / "raw-01-obsolete.png").exists())
-            self.assertFalse((sheet.parent / "01-comeback.png").exists())
             rows = json.loads((sheet.parent / "variants.json").read_text())
-            self.assertEqual(len(rows), 6)
-            self.assertEqual([Path(row["reaction_photo"]).stem for row in rows], list(REACTIONS))
-            self.assertEqual(len({row["title"] for row in rows}), 6)
-            self.assertEqual([row["item"] for row in rows],
-                             [None, "Zeke's Convergence", "Zeke's Convergence",
-                              "Zeke's Convergence", None, "Zeke's Convergence"])
-            self.assertTrue(all("art" not in row and Path(row["frame"]).exists() for row in rows))
+            self.assertEqual(len(rows), 3)
+            self.assertTrue(all(row["beat_id"] in {1, 3} and Path(row["frame"]).exists() for row in rows))
+            self.assertTrue((vod / "thumbnail-brief.json").exists())
+            self.assertTrue((vod / "renders" / "thumbnail.png").exists())
             for row in rows:
                 with Image.open(row["render"]) as rendered:
                     self.assertEqual(rendered.size, (1280, 720))

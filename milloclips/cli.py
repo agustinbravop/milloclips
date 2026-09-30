@@ -6,7 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .ai import AI
-from .editing import analyze, find_shorts, plan_long, render_long, render_short, select_game
+from .editing import analyze, find_shorts, plan_long, render_long, render_long_review, render_short, render_shorts, select_game
 from .fixture import create_fixture
 from .io import record_run
 from .kick import print_vods, recent_vods
@@ -47,14 +47,21 @@ def parser() -> argparse.ArgumentParser:
     long_render = commands.add_parser("render-long", help="Render the horizontal rough cut")
     long_render.add_argument("vod_dir", type=Path)
 
+    long_review = commands.add_parser("review-long", help="Render a short reel of every long-form transition")
+    long_review.add_argument("vod_dir", type=Path)
+
     short_render = commands.add_parser("render-short", help="Render a vertical short")
     short_render.add_argument("vod_dir", type=Path)
     short_render.add_argument("--candidate", type=int, default=0)
 
-    thumbnails = commands.add_parser("thumbnails", help="Generate six Fiddlesticks thumbnail variants and a contact sheet")
+    render_all_shorts = commands.add_parser("render-shorts", help="Render every passing vertical short")
+    render_all_shorts.add_argument("vod_dir", type=Path)
+
+    thumbnails = commands.add_parser("thumbnails", help="Generate three evidence-backed thumbnail candidates and a contact sheet")
     thumbnails.add_argument("vod_dir", type=Path)
     thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
     thumbnails.add_argument("--force", action="store_true")
+    thumbnails.add_argument("--mock", action="store_true")
 
     fixture = commands.add_parser("fixture", help="Run a synthetic Iteration 0 pipeline without an API key")
     fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"))
@@ -93,7 +100,9 @@ def main() -> None:
         print(shorts_report(vod_dir))
         if arguments.render:
             print(render_long(vod_dir))
-            print(render_short(vod_dir))
+            for output in render_shorts(vod_dir):
+                print(output)
+            shorts_report(vod_dir)
             record_run(vod_dir, "render", mock=True)
         print(vod_dir)
         return
@@ -106,12 +115,23 @@ def main() -> None:
         print(render_long(vod_dir))
         record_run(vod_dir, "render-long")
         return
+    if arguments.command == "review-long":
+        print(render_long_review(vod_dir))
+        record_run(vod_dir, "review-long")
+        return
     if arguments.command == "render-short":
         print(render_short(vod_dir, arguments.candidate))
         record_run(vod_dir, "render-short")
+        shorts_report(vod_dir)
+        return
+    if arguments.command == "render-shorts":
+        for output in render_shorts(vod_dir):
+            print(output)
+        record_run(vod_dir, "render-shorts")
+        shorts_report(vod_dir)
         return
     if arguments.command == "thumbnails":
-        print(render_thumbnails(vod_dir, arguments.faces, arguments.force))
+        print(render_thumbnails(vod_dir, arguments.faces, arguments.force, AI(vod_dir, mock=arguments.mock)))
         return
 
     ai = AI(vod_dir, mock=arguments.mock)

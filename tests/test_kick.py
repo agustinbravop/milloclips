@@ -11,31 +11,38 @@ from milloclips.kick import recent_vods
 class KickTests(unittest.TestCase):
     @patch("milloclips.kick.urlopen")
     def test_normalizes_and_filters_vods(self, urlopen) -> None:
-        payload = [
+        responses = [
+            {"id": 6100370},
             {
-                "start_time": "2026-09-20 19:37:38",
-                "duration": 27_785_000,
-                "session_title": "  League   stream ",
-                "categories": [{"name": "League of Legends", "slug": "league-of-legends"}],
-                "video": {"uuid": "vod-uuid"},
-            },
-            {
-                "duration": 1000,
-                "categories": [{"name": "Slots & Casino", "slug": "slots"}],
-                "video": {"uuid": "ignored"},
+                "data": [
+                    {
+                        "id": "public-vod-id",
+                        "start_time": "2026-09-20T19:37:38Z",
+                        "duration": 27_785,
+                        "title": "  League   stream  | !verificar !tienda ",
+                        "category": {"name": "League of Legends", "slug": "league-of-legends"},
+                    },
+                    {
+                        "id": "ignored",
+                        "duration": 1,
+                        "category": {"name": "Slots & Casino", "slug": "slots"},
+                    },
+                ]
             },
         ]
-        urlopen.return_value.__enter__.return_value = io.BytesIO(json.dumps(payload).encode())
+        urlopen.return_value.__enter__.side_effect = [
+            io.BytesIO(json.dumps(response).encode()) for response in responses
+        ]
 
         self.assertEqual(
             recent_vods("elmiillor", 10, league_only=True),
             [
                 {
-                    "date": "2026-09-20 19:37:38",
+                    "date": "2026-09-20T19:37:38Z",
                     "duration": "07:43:05",
                     "category": "League of Legends",
                     "title": "League stream",
-                    "url": "https://kick.com/elmiillor/videos/vod-uuid",
+                    "url": "https://kick.com/elmiillor/videos/public-vod-id",
                 }
             ],
         )
