@@ -1,0 +1,147 @@
+{
+  "generatedAt": "2026-09-30",
+  "channel": {
+    "name": "ElmilloR",
+    "kickUrl": "https://kick.com/elmiillor"
+  },
+  "vods": [
+    {
+      "id": "809acd6b-dd4b-4660-b0ee-746f6398ad8e",
+      "title": "ELISE BUFFS | NO ME CORTO LA BARBA HASTA C1",
+      "date": "2026-09-23",
+      "startTime": "2026-09-23T19:09:40Z",
+      "duration": 14771,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0cfac-7120-7744-86f8-45307de1111c",
+      "thumbnail": "/images/vod-809acd6b.png",
+      "long": {
+        "id": "809acd6b-long",
+        "title": "Elise Buffs: la partida que se decide con el Baron",
+        "poster": "/images/elise-buffs-thumbnail.png",
+        "duration": 616,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "file",
+          "src": "/media/elise-buffs-long.mp4"
+        }
+      },
+      "shorts": [
+        {
+          "id": "809acd6b-short-01",
+          "title": "Estamos trolling",
+          "poster": "/images/elise-buffs-short-01.jpg",
+          "duration": 54,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "file",
+            "src": "/media/elise-buffs-short-01.mp4"
+          }
+        },
+        {
+          "id": "809acd6b-short-02",
+          "title": "La remontada de Graves",
+          "poster": "/images/elise-buffs-short-02.jpg",
+          "duration": 47,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "file",
+            "src": "/media/elise-buffs-short-02.mp4"
+          }
+        }
+      ]
+    },
+    {
+      "id": "f50debc3-9a75-49e2-afb2-a643be4a2691",
+      "title": "1000/2400 Día 4 sin cortarme la barba hasta subir a Challenger",
+      "date": "2026-09-20",
+      "startTime": "2026-09-20T14:04:34Z",
+      "duration": 5316,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0bf22-0950-7cd5-89a8-b0f517f4a530",
+      "long": {
+        "id": "f50debc3-long",
+        "title": "Día 4: de la escaramuza inicial a una derrota inevitable",
+        "poster": "/images/sample-long.jpg",
+        "duration": 614,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "file",
+          "src": "/media/sample-long.mp4"
+        }
+      },
+      "shorts": []
+    },
+    {
+      "id": "10b65baf-dd99-4139-82ea-804f49ae37c0",
+      "title": "Chill gaming",
+      "date": "2026-09-29",
+      "startTime": "2026-09-29T20:15:32Z",
+      "duration": 14368,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "78938968-f0ce-4bdb-b82e-6fd355cf6297",
+      "title": "bo5 nocturno",
+      "date": "2026-09-27",
+      "startTime": "2026-09-27T18:59:40Z",
+      "duration": 9479,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0e43c-b960-7c9b-b158-3205f65fb639",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7",
+      "title": "1000/2300LP NO ME CORTO LA BARBA HASTA C1",
+      "date": "2026-09-25",
+      "startTime": "2026-09-25T11:15:15Z",
+      "duration": 8013,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0d846-d1b8-7b46-b05c-3f67d38a4605",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "168708cc-824b-44a2-94b8-3cb37df26ae5",
+      "title": "Bo5 y mañana buffs a ELISE | 3.000 de ragalo cada día",
+      "date": "2026-09-22",
+      "startTime": "2026-09-22T18:59:31Z",
+      "duration": 24414,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0ca7c-ca38-723c-89e2-7b760abafb08",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "22f7e438-0d05-4ac7-903d-d08349099a01",
+      "title": "bo5 nocturno y a dormir",
+      "date": "2026-09-20",
+      "startTime": "2026-09-20T19:37:38Z",
+      "duration": 27785,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0c052-f7d0-7a56-a211-daa0593b04d6",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "b27f44fc-c173-48b7-87d9-65ab0bd27886",
+      "title": "DIA 2 NO ME CORTO LA BARBA HASTA SUBIR A Challenger",
+      "date": "2026-09-18",
+      "startTime": "2026-09-18T18:38:08Z",
+      "duration": 9605,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0b5cf-c680-709b-b8b4-1332e60c5ac4",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "2d8cfd06-77cb-46da-8764-0fa356c6ae14",
+      "title": "NO ME CORTO LA BARBA HASTA SUBIR A CHALLENGER | DIA 2",
+      "date": "2026-09-18",
+      "startTime": "2026-09-18T14:01:18Z",
+      "duration": 7884,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0b4d2-53b0-700a-b317-a3981d64b17f",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    }
+  ]
+}

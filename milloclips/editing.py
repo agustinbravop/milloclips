@@ -20,6 +20,9 @@ from .io import read_json, write_json
 from .media import duration, extract_audio, ffmpeg, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_frames
 
 
+ACCENT = (234, 255, 32)
+
+
 def _cache_matches(data: dict, **expected: object) -> bool:
     return all(data.get(key) == value for key, value in expected.items())
 
@@ -775,12 +778,12 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
     icon_layer = icon_layer.resize((340, 340), Image.Resampling.LANCZOS)
     flash = Image.new("RGBA", frame.size)
     flash_alpha = round(120 * (1 - _ease((time - 0.18) / 0.18)))
-    ImageDraw.Draw(flash).ellipse((500, 100, 780, 380), fill=(231, 222, 0, flash_alpha))
+    ImageDraw.Draw(flash).ellipse((500, 100, 780, 380), fill=(*ACCENT, flash_alpha))
     frame = Image.alpha_composite(frame, flash.filter(ImageFilter.GaussianBlur(45)))
     glow = Image.new("RGBA", frame.size)
     glow_expansion = round(18 * breath)
     ImageDraw.Draw(glow).ellipse((390 - glow_expansion, -20 - glow_expansion, 890 + glow_expansion, 500 + glow_expansion),
-                                 fill=(231, 222, 0, round(48 + 10 * breath)))
+                                  fill=(*ACCENT, round(48 + 10 * breath)))
     frame = Image.alpha_composite(frame, glow.filter(ImageFilter.GaussianBlur(round(110 + 8 * breath))))
     spectrum = spectrum or [0.0] * 48
     energy = sum(spectrum) / len(spectrum)
@@ -802,10 +805,10 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
     entrance = _ease((time - 0.18) / 0.25)
     ring = Image.new("RGBA", (ring_size * ring_scale, ring_size * ring_scale))
     ring_glow = Image.new("RGBA", ring.size)
-    ImageDraw.Draw(ring_glow).line(ring_points, fill=(231, 222, 0, round((25 + 20 * energy) * entrance)),
+    ImageDraw.Draw(ring_glow).line(ring_points, fill=(*ACCENT, round((25 + 20 * energy) * entrance)),
                                    width=8 * ring_scale, joint="curve")
     ring = Image.alpha_composite(ring, ring_glow.filter(ImageFilter.GaussianBlur(3 * ring_scale)))
-    ImageDraw.Draw(ring).line(ring_points, fill=(231, 222, 0, round((135 + 40 * energy) * entrance)),
+    ImageDraw.Draw(ring).line(ring_points, fill=(*ACCENT, round((135 + 40 * energy) * entrance)),
                               width=3 * ring_scale, joint="curve")
     ring = ring.resize((ring_size, ring_size), Image.Resampling.LANCZOS)
     frame.alpha_composite(ring, (420, 50))
@@ -817,17 +820,17 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
     label = "ElmilloR"
     box = text_draw.textbbox((0, 0), label, font=font, stroke_width=4)
     x = (1280 - box[2]) / 2
-    y = 438
+    y = 470
     shadow = Image.new("RGBA", frame.size)
     ImageDraw.Draw(shadow).text((x, y + 6), label, font=font, fill=(0, 0, 0, round(85 + 20 * breath)), stroke_width=4,
                                 stroke_fill=(0, 0, 0, round(85 + 20 * breath)))
     frame = Image.alpha_composite(frame, shadow.filter(ImageFilter.GaussianBlur(round(8 + 2 * breath))))
-    text_draw.text((x, y), label, font=font, fill=(231, 222, 0, 255), stroke_width=4, stroke_fill=(5, 7, 6, 255))
+    text_draw.text((x, y), label, font=font, fill=(*ACCENT, 255), stroke_width=4, stroke_fill=(5, 7, 6, 255))
     pass_progress = next((progress for start in (0.65, 2.65) if 0 < (progress := (time - start) / 0.75) < 1), -1)
     if 0 < pass_progress < 1:
         highlight = Image.new("RGBA", frame.size)
         ImageDraw.Draw(highlight).text((x, y), label, font=font, fill=(255, 252, 210, 210), stroke_width=4,
-                                       stroke_fill=(231, 222, 0, 180))
+                                       stroke_fill=(*ACCENT, 180))
         center = x - 50 + (box[2] + 100) * _ease(pass_progress)
         band = Image.new("L", frame.size)
         ImageDraw.Draw(band).polygon(((center - 38, y + 140), (center + 2, y - 16),
@@ -910,11 +913,11 @@ def _outro_overlay(
     draw = ImageDraw.Draw(overlay)
     label = "LIKE Y SUSCRIBETE"
     box = draw.textbbox((0, 0), label, font=title_font, stroke_width=3)
-    draw.text(((1280 - box[2]) / 2, 74), label, font=title_font, fill=(231, 222, 0, alpha), stroke_width=3,
+    draw.text(((1280 - box[2]) / 2, 74), label, font=title_font, fill=(*ACCENT, alpha), stroke_width=3,
               stroke_fill=(5, 7, 6, alpha))
     follow = "SIGUEME EN KICK Y TWITTER"
     box = draw.textbbox((0, 0), follow, font=info_font, stroke_width=3)
-    draw.text(((1280 - box[2]) / 2, 500), follow, font=info_font, fill=(231, 222, 0, alpha), stroke_width=3,
+    draw.text(((1280 - box[2]) / 2, 500), follow, font=info_font, fill=(*ACCENT, alpha), stroke_width=3,
               stroke_fill=(5, 7, 6, alpha))
 
     # Keep the center and lower frame empty for YouTube's channel badge and recommended-video elements.
