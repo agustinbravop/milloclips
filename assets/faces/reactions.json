@@ -1,0 +1,22 @@
+{
+  "shocked": {
+    "emotion": "Wide-eyed alarm or disbelief, open mouth; high intensity.",
+    "fits": "Unexpected disaster, sudden danger, unbelievable reversal, an actual shocking payoff.",
+    "avoid": "Routine explanations, calm advice, confident recommendations."
+  },
+  "hold-on": {
+    "emotion": "Hands raised, skeptical or playful objection; animated but not purely excited.",
+    "fits": "Questioning a strange choice, a funny contradiction, wait-what moments, suspicious builds.",
+    "avoid": "Straightforward dominance or a calm instructional claim."
+  },
+  "overly-hyped": {
+    "emotion": "Clenched fists and closed eyes; an extreme, over-the-top emotional peak.",
+    "fits": "RARE use only: exceptionally explosive, genuinely extreme hype supported by the video's actual event or reaction. Explain why a smiling photo would undersell this moment.",
+    "avoid": "Ordinary wins, strong but routine plays, build/strategy explanations, mild curiosity, playful experiments. Exciting is not enough: choose smiling unless the hype is truly exceptional."
+  },
+  "smiling": {
+    "emotion": "Genuine broad smile, relaxed amusement; positive rather than alarmed.",
+    "fits": "Preferred for most positive hooks: playful experimentation, satisfying success, cheeky unexpected picks, humorous confidence, normal excitement and strong plays that are not an exceptional emotional peak.",
+    "avoid": "Serious disaster, an angry rant, genuinely alarming stakes."
+  }
+}

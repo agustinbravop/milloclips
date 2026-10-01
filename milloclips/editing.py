@@ -17,7 +17,7 @@ from yt_dlp import YoutubeDL
 from .ai import AI
 from .fonts import ASS_NAME, FILE
 from .io import read_json, write_json
-from .media import duration, extract_audio, ffmpeg, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_boundary_frames, sample_frames
+from .media import TITLE_DISSOLVE, duration, extract_audio, ffmpeg, intro_duration, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_boundary_frames, sample_frames, title_start
 
 
 ACCENT = (234, 255, 32)
@@ -465,7 +465,7 @@ def _long_scene_ranges(beats: list[dict], model_plan: dict) -> list[dict]:
     scenes = []
     proposals = sorted(
         (proposal for proposal in model_plan.get("scenes", []) if isinstance(proposal, dict)
-         and proposal.get("start_beat_id") in by_id),
+         and type(proposal.get("start_beat_id")) is int and proposal["start_beat_id"] in by_id),
         key=lambda proposal: by_id[proposal["start_beat_id"]],
     )
     for proposal in proposals:
@@ -517,12 +517,6 @@ def _long_scene_ranges(beats: list[dict], model_plan: dict) -> list[dict]:
     return scenes
 
 
-def _even_frames(frames: list[dict], maximum: int = 18) -> list[dict]:
-    if len(frames) <= maximum:
-        return frames
-    return [frames[round(index * (len(frames) - 1) / (maximum - 1))] for index in range(maximum)]
-
-
 def _avoid_split_word(start: float, end: float, words: list[dict], region: tuple[float, float]) -> tuple[float, float]:
     if any(float(word.get("start", -1)) < start < float(word.get("end", -1)) for word in words):
         pauses = [
@@ -539,118 +533,496 @@ def _avoid_split_word(start: float, end: float, words: list[dict], region: tuple
     return start, end
 
 
+def _long_boundary_segments(answer: object, region: tuple[float, float], words: list[dict], frames: list[dict],
+                            *, windows: list[dict] | None = None, mock: bool = False) -> list[dict]:
+    """Validate event anchors and revalidate ranges after word-boundary protection."""
+    if not isinstance(answer, dict) or any(answer.get(key) is not False for key in ("needs_earlier_context", "needs_later_context")):
+        raise ValueError("Event setup or outcome is unresolved")
+    parts = answer.get("segments")
+    if not isinstance(parts, list) or not 1 <= len(parts) <= 6 or (windows is not None and len(parts) != len(windows)):
+        raise ValueError("Expected one to six retained event ranges")
+    result = []
+    previous_end = region[0]
+    for index, part in enumerate(parts):
+        numeric = ("start", "end", "action_start", "outcome_time", "reaction_end")
+        if not isinstance(part, dict) or any(type(part.get(key)) not in (int, float) or not math.isfinite(part[key]) for key in numeric):
+            raise ValueError("Missing finite event boundaries or anchors")
+        start, end = part["start"], part["end"]
+        action, outcome, reaction = (part[key] for key in numeric[2:])
+        if (not region[0] <= start <= action < outcome <= end <= region[1] or not action <= reaction <= end
+                or start < previous_end):
+            raise ValueError("Event ranges/anchors must be complete, chronological and non-overlapping")
+        if part.get("event_kind") not in {"combat", "speech"} or (part["event_kind"] == "combat" and start >= action):
+            raise ValueError("Combat must have a pre-action entry; speech requires a premise")
+        if any(not isinstance(part.get(key), str) or not part[key].strip() for key in ("start_reason", "end_reason")):
+            raise ValueError("Entry and exit need editorial reasons")
+        downtime = part.get("downtime_start")
+        if part.get("downtime_kind") not in {"recall", "shopping", "travel", "waiting", "none"}:
+            raise ValueError("Unknown downtime kind")
+        if downtime is not None and (type(downtime) not in (int, float) or not math.isfinite(downtime)
+                                     or not outcome <= downtime <= region[1]):
+            raise ValueError("Invalid downtime anchor")
+        if (downtime is None) != (part["downtime_kind"] == "none"):
+            raise ValueError("Downtime kind and anchor disagree")
+        phrase_end = reaction
+        if not mock:
+            evidence = part.get("evidence", {})
+            for key in ("action_start", "outcome_time", "reaction_end", *(["downtime_start"] if downtime is not None else [])):
+                item = evidence.get(key) if isinstance(evidence, dict) else None
+                if not isinstance(item, dict) or type(item.get("time")) not in (int, float) or abs(item["time"] - part[key]) > 0.01:
+                    raise ValueError(f"Missing evidence for {key}")
+                if item.get("kind") == "speech":
+                    span = _spoken_span(str(item.get("quote", "")), words, max(region[0], item["time"] - 0.5), region[1], minimum_tokens=1)
+                    if span is None or abs(span[0] - item["time"]) > 0.5:
+                        raise ValueError(f"Unmatched speech anchor: {key}")
+                    if key == "reaction_end":
+                        phrase_end = max(phrase_end, span[1])
+                elif item.get("kind") != "visual" or len(str(item.get("detail", "")).strip()) < 12 or not any(
+                    abs(frame["timestamp"] - item["time"]) <= 0.01 for frame in frames
+                ):
+                    raise ValueError(f"Visual anchor is not an inspected frame: {key}")
+        # A reaction can precede the result banner, and coarse cuts may end inside its quote.
+        if max(phrase_end, outcome) >= end:
+            end = min(region[1], max(phrase_end, outcome) + 0.1)
+        start, end = _avoid_split_word(start, end, words, region)
+        # Word-safe gaps are not necessarily sentence-safe: finish a continuing exchange.
+        left = [word for word in words if float(word["end"]) <= end]
+        right = [word for word in words if float(word["start"]) >= end]
+        if left and right and float(right[0]["start"]) - float(left[-1]["end"]) < 0.45:
+            pauses = [float(a["end"]) + 0.1 for a, b in zip(words, words[1:])
+                      if end <= float(a["end"]) <= min(region[1] - 0.1, end + 3)
+                      and float(b["start"]) - float(a["end"]) >= 0.45]
+            if not pauses:
+                raise ValueError("Exit cuts a continuing sentence/exchange; more context is needed")
+            end = pauses[0]
+        if windows is not None and not (windows[index]["start"][0] <= start <= windows[index]["start"][1]
+                                       and windows[index]["end"][0] <= end <= windows[index]["end"][1]):
+            raise ValueError("Cut lies outside its inspected dense boundary window")
+        if windows is not None and not mock:
+            inspected_times = [frame["timestamp"] for frame in frames]
+            speech_times = [float(word[key]) for word in words for key in ("start", "end")]
+            for boundary in (part["start"], part["end"]):
+                if not any(abs(boundary - time) <= 1 / 30 for time in [*inspected_times, *speech_times, *region]):
+                    raise ValueError("Precise cut must cite an inspected frame or word boundary")
+        if (not previous_end <= start <= action < outcome < end <= region[1]
+                or not action <= reaction < end or phrase_end > end):
+            raise ValueError("Word adjustment invalidated event boundaries")
+        # A useful spoken reaction may extend past recall onset; routine dead tails may not.
+        if downtime is not None and end > max(downtime, phrase_end + 0.5) + 0.25:
+            raise ValueError("Cut retains downtime after its completed reaction")
+        result.append({**part, "start": start, "end": end})
+        previous_end = end
+    return result
+
+
+def _deduplicate_long_events(cuts: list[dict]) -> list[dict]:
+    """Adjacent scene searches may retain the same setup; keep its wider approved cut."""
+    unique = []
+    for cut in sorted(cuts, key=lambda part: part["source_start"]):
+        if unique and cut["source_start"] < unique[-1]["source_end"]:
+            previous = unique[-1]
+            contained = (previous["source_start"] <= cut["source_start"] and cut["source_end"] <= previous["source_end"]) or (
+                cut["source_start"] <= previous["source_start"] and previous["source_end"] <= cut["source_end"])
+            if (not contained or previous["event_kind"] != cut["event_kind"]
+                    or abs(previous["action_start"] - cut["action_start"]) > 0.5):
+                raise ValueError(f"Refined events overlap: {previous['scene_id']} and {cut['scene_id']}")
+            kept = max((previous, cut), key=lambda part: part["source_end"] - part["source_start"])
+            unique[-1] = {**kept, "required": previous.get("required", False) or cut.get("required", False),
+                          "scene_ids": list(dict.fromkeys([*previous.get("scene_ids", [previous["scene_id"]]),
+                                                           *cut.get("scene_ids", [cut["scene_id"]])]))}
+        else:
+            unique.append(cut)
+    return unique
+
+
+def _long_cold_open(answer: dict, parts: list[dict], words: list[dict], region: tuple[float, float], windows: dict) -> tuple[float, float]:
+    start, end = answer.get("cold_open_start"), answer.get("cold_open_end")
+    if (type(start) not in (int, float) or type(end) not in (int, float)
+            or not math.isfinite(start) or not math.isfinite(end) or not 5 <= end - start <= 20
+            or not any(part["start"] <= start < end <= part["end"] for part in parts)):
+        raise ValueError("Missing valid complete cold open inside a retained event")
+    start, end = _avoid_split_word(start, end, words, region)
+    if (not 5 <= end - start <= 20 or not any(part["start"] <= start < end <= part["end"] for part in parts)
+            or not windows["start"][0] <= start <= windows["start"][1]
+            or not windows["end"][0] <= end <= windows["end"][1]):
+        raise ValueError("Cold-open word adjustment left its retained event or exceeded 20s; select a complete phrase boundary")
+    return start, end
+
+
 def _refine_long_scenes(vod_dir: Path, ai: AI, game: dict, beats: list[dict], scenes: list[dict], cache_key: dict,
-                        cold_open_beat_id: int | None, force: bool) -> tuple[list[dict], dict]:
-    source = Path(read_json(vod_dir / "manifest.json")["source"])
+                        cold_open_beat_id: int | None, force: bool, *, require_intro_hint: bool = True) -> tuple[list[dict], dict | None]:
+    manifest = read_json(vod_dir / "manifest.json")
+    source = Path(manifest["source"])
+    origin = game["gameplay_start"]
     words = transcript_words(vod_dir)
+    pregame_path = vod_dir / "pregame-transcript.json"
+    if pregame_path.exists():
+        pregame = read_json(pregame_path)
+        offset = pregame.get("audio_start", origin) - origin
+        words = sorted([*words, *[{**word, "start": word["start"] + offset, "end": word["end"] + offset}
+                                 for word in pregame.get("words", [])]], key=lambda word: word["start"])
+    bounds = (max(-origin, min(beat["start"] for beat in beats)), min(manifest["duration"], cache_key["editorial_end"]) - origin)
     path = vod_dir / "long-cuts.json"
     cached = read_json(path) if path.exists() else {}
-    answers = cached.get("answers", {}) if not force and _cache_matches(cached, **cache_key, cuts_version=1) else {}
+    answers = cached.get("answers", {}) if not force and _cache_matches(cached, **cache_key, cuts_version=2) else {}
     reviewed_path = vod_dir / "long-cuts.reviewed.json"
     reviewed = read_json(reviewed_path) if reviewed_path.exists() else {}
-    reviewed_answers = reviewed.get("answers", {}) if _cache_matches(reviewed, game_id=game["id"]) else {}
+    if reviewed and not _cache_matches(reviewed, **cache_key, cuts_version=2):
+        raise ValueError("long-cuts.reviewed.json is stale; rebind corrections to the new boundary inputs")
     cuts = []
     cold_open = None
+
+    def sampled(region: tuple[float, float], interval: float) -> list[dict]:
+        tag = _fingerprint({"source": cache_key.get("source_identity"), "region": region, "interval": interval})
+        frames = sample_boundary_frames(source, vod_dir / "frames" / "long-boundaries" / tag, interval,
+                                        start=origin + region[0], end=origin + region[1])
+        return [{**frame, "timestamp": frame["timestamp"] - origin} for frame in frames]
+
     for scene in scenes:
         key = f"{scene['start_beat_id']}:{scene['end_beat_id']}"
-        region = (max(-180, scene["start"] - 8), min(cache_key["editorial_end"] - game["gameplay_start"], scene["end"] + 12))
-        frame_dir = vod_dir / "frames" / "long" / f"{game['id']}-{region[0]:.2f}-{region[1]:.2f}"
-        sampled = sorted(frame_dir.glob("frame_*.jpg"))
-        if not sampled:
-            sampled = [Path(item["path"]) for item in sample_frames(
-                source, frame_dir, 1, start=game["gameplay_start"] + region[0], end=game["gameplay_start"] + region[1]
-            )]
-        frames = [{"timestamp": region[0] + index, "path": str(frame)} for index, frame in enumerate(sampled)]
-        preview = _even_frames(frames)
-        nearby_beats = [beat for beat in beats if beat["start"] < region[1] and beat["end"] > region[0]]
-        nearby_words = [word for word in words if region[0] <= float(word.get("start", -1)) < region[1]]
+        signature = _fingerprint({"scene": scene, "cold_open": cold_open_beat_id})
+        entry = answers.get(key, {})
+        if entry.get("scene_signature") != signature:
+            entry = {"scene_signature": signature, "locate": []}
+            answers[key] = entry
         is_cold = cold_open_beat_id is not None and scene["start_beat_id"] <= cold_open_beat_id <= scene["end_beat_id"]
-        if key not in answers:
-            answers[key] = ai.refine_long_scene(
-                {**scene, "allowed_region": list(region)}, nearby_beats, nearby_words, preview, cold_open=is_cold
-            )
-            write_json(path, {**cache_key, "cuts_version": 1, "answers": answers})
-        answer = reviewed_answers.get(key, answers[key])
-        start, end = (answer.get("start"), answer.get("end")) if isinstance(answer, dict) else (None, None)
-        if (type(start) not in (int, float) or type(end) not in (int, float) or not math.isfinite(start)
-                or not math.isfinite(end) or not region[0] <= start < end <= region[1] or not 5 <= end - start <= 120):
-            start, end = scene["start"], scene["end"]
-        start, end = _avoid_split_word(start, end, nearby_words, region)
-        cut = {"source_start": game["gameplay_start"] + start, "source_end": game["gameplay_start"] + end,
-                "relative_start": start, "relative_end": end, "start_beat_id": scene["start_beat_id"],
-                "end_beat_id": scene["end_beat_id"], "purpose": scene["purpose"],
-                "raw_start": scene["start"], "raw_end": scene["end"], "required": scene.get("required", False)}
-        cuts.append(cut)
-        if is_cold and isinstance(answer, dict):
-            hook_start, hook_end = answer.get("cold_open_start"), answer.get("cold_open_end")
-            if (type(hook_start) in (int, float) and type(hook_end) in (int, float) and math.isfinite(hook_start)
-                    and math.isfinite(hook_end) and start <= hook_start < hook_end <= end and 5 <= hook_end - hook_start <= 20):
-                cold_open = {"source_start": game["gameplay_start"] + hook_start,
-                             "source_end": game["gameplay_start"] + hook_end,
+        region = (max(bounds[0], scene["start"] - 20), min(bounds[1], scene["end"] + 20))
+        try:
+            for attempt in range(2):
+                frames = sampled(region, 2)
+                nearby_words = [word for word in words if region[0] <= word["start"] < region[1]]
+                nearby_beats = [beat for beat in beats if beat["start"] < region[1] and beat["end"] > region[0]]
+                if len(entry["locate"]) <= attempt:
+                    entry["locate"].append(ai.refine_long_scene(
+                        {**scene, "allowed_region": list(region), "boundary_pass": "locate"}, nearby_beats, nearby_words, frames, cold_open=is_cold))
+                    write_json(path, {**cache_key, "cuts_version": 2, "answers": answers})
+                located = entry["locate"][attempt]
+                earlier = isinstance(located, dict) and located.get("needs_earlier_context") is True
+                later = isinstance(located, dict) and located.get("needs_later_context") is True
+                if not earlier and not later:
+                    break
+                if attempt == 1:
+                    raise ValueError("Setup/outcome remains unresolved after bounded context expansion")
+                expanded = (max(bounds[0], region[0] - 30) if earlier else region[0],
+                            min(bounds[1], region[1] + 30) if later else region[1])
+                if expanded == region:
+                    raise ValueError("Needed event context is outside available source bounds")
+                region = expanded
+            located_parts = _long_boundary_segments(located, region, nearby_words, frames, mock=ai.mock)
+            validation_feedback = None
+            for precise_attempt in range(2):
+                radius = 3 if precise_attempt == 0 else 6
+                windows = [{edge: [max(region[0], part[edge] - radius), min(region[1], part[edge] + radius)] for edge in ("start", "end")}
+                           for part in located_parts]
+                cold_windows = None
+                if is_cold:
+                    if any(type(located.get(f"cold_open_{edge}")) not in (int, float)
+                           or not math.isfinite(located[f"cold_open_{edge}"])
+                           or not region[0] <= located[f"cold_open_{edge}"] <= region[1] for edge in ("start", "end")):
+                        raise ValueError("Event-location pass needs valid cold-open boundaries")
+                    cold_windows = {edge: [max(region[0], located[f"cold_open_{edge}"] - radius),
+                                           min(region[1], located[f"cold_open_{edge}"] + radius)] for edge in ("start", "end")}
+                # Keep event anchors as context alongside the quarter-second boundary images.
+                context = {frame["timestamp"]: frame for frame in frames}
+                for window in [*windows, *([cold_windows] if cold_windows else [])]:
+                    for left, right in window.values():
+                        for frame in sampled((left, right), 0.25):
+                            context[frame["timestamp"]] = frame
+                precise_key = "precise" if precise_attempt == 0 else "precise_retry"
+                if precise_key not in entry:
+                    entry[precise_key] = ai.refine_long_scene(
+                        {**scene, "allowed_region": list(region), "boundary_pass": "precise", "located_segments": located_parts,
+                         "boundary_windows": windows, "cold_open_windows": cold_windows,
+                         "validation_feedback": validation_feedback}, nearby_beats, nearby_words,
+                        sorted(context.values(), key=lambda frame: frame["timestamp"]),
+                        cold_open=is_cold)
+                    write_json(path, {**cache_key, "cuts_version": 2, "answers": answers})
+                answer = entry[precise_key]
+                try:
+                    checked = _long_boundary_segments(answer, region, nearby_words, list(context.values()), windows=windows, mock=ai.mock)
+                    if is_cold:
+                        _long_cold_open(answer, checked, nearby_words, region, cold_windows)
+                    break
+                except ValueError as error:
+                    if precise_attempt == 1:
+                        raise
+                    validation_feedback = str(error)
+            correction = reviewed.get("answers", {}).get(key)
+            if correction and correction.get("raw_signature") != _fingerprint(entry):
+                raise ValueError("Reviewed boundary decision does not match its raw answer")
+            answer = correction["decision"] if correction else answer
+            parts = _long_boundary_segments(answer, region, nearby_words, list(context.values()), windows=windows, mock=ai.mock)
+            for part in parts:
+                cuts.append({**part, "source_start": origin + part["start"], "source_end": origin + part["end"],
+                             "relative_start": part["start"], "relative_end": part["end"], "scene_id": key,
+                             "start_beat_id": scene["start_beat_id"], "end_beat_id": scene["end_beat_id"],
+                             "purpose": scene["purpose"], "required": scene.get("required", False)})
+            if is_cold:
+                hook_start, hook_end = _long_cold_open(answer, parts, nearby_words, region, cold_windows)
+                cold_open = {"source_start": origin + hook_start, "source_end": origin + hook_end,
                              "relative_start": hook_start, "relative_end": hook_end}
-
-    if cold_open is None:
-        source_cut = next((cut for cut in cuts if cold_open_beat_id is not None
-                           and cut["start_beat_id"] <= cold_open_beat_id <= cut["end_beat_id"]), cuts[-1])
-        hook_start = source_cut["relative_start"]
-        cold_open = {"source_start": game["gameplay_start"] + hook_start,
-                     "source_end": game["gameplay_start"] + min(source_cut["relative_end"], hook_start + 7),
-                     "relative_start": hook_start, "relative_end": min(source_cut["relative_end"], hook_start + 7)}
+        except ValueError as error:
+            write_json(vod_dir / "long-boundary-review.json", {**cache_key, "scene_id": key, "status": "needs_review", "reason": str(error)})
+            raise ValueError(f"Long scene {key} needs review: {error}") from error
+    try:
+        original_count = len(cuts)
+        cuts = _deduplicate_long_events(cuts)
+        if cold_open is None and require_intro_hint:
+            raise ValueError("Missing cold open")
+    except ValueError as error:
+        reason = str(error)
+        write_json(vod_dir / "long-boundary-review.json", {**cache_key, "status": "needs_review", "reason": reason})
+        raise
+    write_json(vod_dir / "long-boundary-review.json", {**cache_key, "status": "ready", "segment_count": len(cuts),
+                                                     "duplicate_event_count": original_count - len(cuts)})
     return cuts, cold_open
+
+
+def _validate_long_intro(answer: dict, events: list[dict], limits: dict, words: list[dict], frames: list[dict],
+                         origin: float, *, mock: bool = False) -> dict:
+    if not isinstance(answer, dict) or answer.get("reject") or answer.get("complete") is not True:
+        raise ValueError("Intro is not a complete verified moment")
+    kind = answer.get("kind")
+    if kind not in {"setup", "cold_open"} or answer.get("subject") != "elmiillor" or answer.get("related_to_selected_game") is not True:
+        raise ValueError("Intro must establish this game or show ElmilloR's own successful play")
+    if answer.get("outcome") != ("setup" if kind == "setup" else "success") or (kind == "cold_open" and answer.get("cool_play") is not True):
+        raise ValueError("Failed plays, deaths and teammate highlights cannot be cold opens")
+    supplied = {event["id"]: event for event in events}
+    parts = answer.get("segments")
+    if not isinstance(parts, list) or not 1 <= len(parts) <= (4 if kind == "setup" else 1):
+        raise ValueError("Setup intros allow 1-4 ranges; cold opens require one complete play")
+    retained = []
+    previous_end = -origin
+    for part in parts:
+        if not isinstance(part, dict) or type(part.get("event_id")) is not int or part["event_id"] not in supplied:
+            raise ValueError("Intro references an unknown event")
+        event = supplied[part["event_id"]]
+        if kind == "setup" and not event["setup_eligible"]:
+            raise ValueError("Setup must come from relevant pregame/early-game context")
+        if any(type(part.get(key)) not in (int, float) or not math.isfinite(part[key]) for key in ("start", "end")):
+            raise ValueError("Intro ranges must be finite")
+        start, end = _avoid_split_word(part["start"], part["end"], words, (event["start"], event["end"]))
+        if not event["start"] <= start < end <= event["end"] or start < previous_end:
+            raise ValueError("Intro ranges must stay inside approved events and be chronological")
+        retained.append({"source_start": origin + start, "source_end": origin + end,
+                         "relative_start": start, "relative_end": end})
+        previous_end = end
+    total = sum(part["source_end"] - part["source_start"] for part in retained)
+    if not limits[kind][0] <= total <= limits[kind][1]:
+        raise ValueError(f"{kind} intro duration {total:.1f}s is outside its story budget {limits[kind]}")
+    evidence = answer.get("evidence", {})
+    if not mock:
+        if not isinstance(evidence, dict) or type(evidence.get("time")) not in (int, float) or not math.isfinite(evidence["time"]):
+            raise ValueError("Intro needs a timestamped premise/success anchor")
+        containing = next((part for part in retained if part["relative_start"] <= evidence["time"] < part["relative_end"]), None)
+        if containing is None:
+            raise ValueError("Intro evidence is outside retained footage")
+        if kind == "setup":
+            span = _spoken_span(str(evidence.get("quote", "")), words, containing["relative_start"], containing["relative_end"])
+            if evidence.get("kind") != "speech" or span is None or abs(span[0] - evidence["time"]) > 0.5 or span[1] > containing["relative_end"]:
+                raise ValueError("Setup intro must retain its exact complete premise quote")
+        elif evidence.get("kind") != "visual" or len(str(evidence.get("detail", "")).strip()) < 12 or not any(
+            abs(frame["timestamp"] - evidence["time"]) < 0.02 for frame in frames
+        ):
+            raise ValueError("A cold open needs inspected visual evidence of ElmilloR's successful play")
+    return {"kind": kind, "reason": str(answer.get("reason", "")), "evidence": evidence, "segments": retained,
+            "source_start": retained[0]["source_start"], "source_end": retained[-1]["source_end"]}
+
+
+def _extend_intro_body(vod_dir: Path, ai: AI, plan: dict, beats: list[dict], intro: dict,
+                       story_segments: list[dict], current_duration: float) -> list[dict]:
+    proposals = read_json(vod_dir / "long-proposals.json")
+    original = proposals.get("budget_revision", {}).get("plan", proposals["plan"])
+    original_scenes = _long_scene_ranges(beats, original)
+    by_range = {(scene["start_beat_id"], scene["end_beat_id"]): scene for scene in original_scenes}
+    overhead = intro_duration(intro) + plan["title_duration"] + plan["end_card_duration"] - TITLE_DISSOLVE
+    first_action = next(part["source_start"] for part in story_segments if part.get("event_kind") == "combat" and part.get("relative_start", 0) >= 0)
+    main_segments = [part for part in story_segments if part["source_start"] >= first_action] if intro["kind"] == "setup" else story_segments
+    feedback = {"duration": current_duration, "current_main_duration": sum(part["source_end"] - part["source_start"] for part in main_segments),
+                "footage_budget": [540 - overhead, 720 - overhead],
+                "required_ranges": list(by_range), "cold_open_beat_id": original.get("cold_open_beat_id"),
+                "approved_segments": main_segments, "approved_intro": intro,
+                "excluded_preparation_ranges": [[part["source_start"], part["source_end"]] for part in story_segments if part not in main_segments],
+                "reason": "The concise setup intro REPLACES pre-action preparation: do NOT count excluded preparation toward the footage budget. Add at least ONE new optional complete event to the MAIN edit, never pad the intro. Preserve all existing scene ranges."}
+    path = vod_dir / "long-intro-budget.json"
+    signature = _fingerprint(feedback)
+    revision = read_json(path) if path.exists() else {}
+    if revision.get("signature") != signature:
+        revision = {"signature": signature, "plan": ai.plan_long(beats, budget_feedback=feedback)}
+        write_json(path, revision)
+    scenes = _long_scene_ranges(beats, revision["plan"])
+    if not by_range.keys() <= {(scene["start_beat_id"], scene["end_beat_id"]) for scene in scenes}:
+        raise ValueError("Intro-budget revision removed an approved story unit")
+    scenes = [scene for scene in scenes if (scene["start_beat_id"], scene["end_beat_id"]) not in by_range]
+    if not scenes:
+        raise ValueError("Intro-budget revision did not add any new main-video event")
+    raw_cuts = read_json(vod_dir / "long-cuts.json")
+    cache_key = {key: value for key, value in raw_cuts.items() if key not in {"answers", "cuts_version"}}
+    game = selected_game(vod_dir)
+    cuts, _hint = _refine_long_scenes(vod_dir, ai, game, beats, scenes, cache_key, None, False, require_intro_hint=False)
+    return _deduplicate_long_events([*story_segments, *cuts])
+
+
+def _apply_long_intro(vod_dir: Path, ai: AI, plan: dict, beats: list[dict], force: bool = False) -> dict:
+    origin = plan["gameplay_start"]
+    source = Path(read_json(vod_dir / "manifest.json")["source"])
+    story_segments = plan.get("story_segments", plan["segments"])
+    first_action = next((part["source_start"] for part in story_segments
+                         if part.get("event_kind") == "combat" and part.get("relative_start", 0) >= 0), None)
+    after_setup = [part for part in story_segments if first_action is not None and part["source_start"] >= first_action]
+    overhead = plan["title_duration"] + plan["end_card_duration"] - TITLE_DISSOLVE
+    setup_base = overhead + sum(part["source_end"] - part["source_start"] for part in after_setup)
+    cold_base = overhead + sum(part["source_end"] - part["source_start"] for part in story_segments)
+    limits = {"setup": [8, min(40, 720 - setup_base)],
+              "cold_open": [max(5, 540 - cold_base), min(20, 720 - cold_base)]}
+    events = []
+    for index, part in enumerate(story_segments):
+        start, end = part["source_start"] - origin, part["source_end"] - origin
+        events.append({"id": index, "start": start, "end": end, "event_kind": part.get("event_kind", "combat"),
+                       "purpose": part.get("purpose", ""), "result_evidence": part.get("evidence", {}),
+                       "setup_eligible": first_action is not None and part["source_end"] <= first_action,
+                       "text": " ".join(beat.get("text", "") for beat in beats if beat["start"] < end and beat["end"] > start)})
+    pregame = [beat for beat in beats if beat.get("phase") == "CHAMP_SELECT" and beat.get("text")]
+    if pregame:
+        events.append({"id": len(events), "start": max(-origin, pregame[0]["start"]), "end": 0.0,
+                       "event_kind": "speech", "setup_eligible": True, "purpose": "Relevant champion-select premise only",
+                       "text": " ".join(beat["text"] for beat in pregame)})
+    words = transcript_words(vod_dir)
+    pregame_path = vod_dir / "pregame-transcript.json"
+    if pregame_path.exists():
+        transcript = read_json(pregame_path)
+        offset = transcript.get("audio_start", origin) - origin
+        words = sorted([*words, *[{**word, "start": word["start"] + offset, "end": word["end"] + offset}
+                                 for word in transcript.get("words", [])]], key=lambda word: word["start"])
+    inputs = _fingerprint({"events": events, "story": plan.get("story", ""), "words": words, "limits": limits,
+                           "source": _source_identity(source), "model": ai.editorial_model, "mock": ai.mock})
+    path = vod_dir / "long-intro.json"
+    cache = read_json(path) if path.exists() and not force else {}
+    if not _cache_matches(cache, intro_version=1, inputs=inputs):
+        cache = {"intro_version": 1, "inputs": inputs, "attempts": []}
+    feedback = None
+    for attempt in range(2):
+        if len(cache["attempts"]) <= attempt:
+            cache["attempts"].append({"proposal": ai.propose_long_intro(events, plan.get("story", ""), limits, feedback=feedback)})
+            write_json(path, cache)
+        raw = cache["attempts"][attempt]
+        try:
+            proposal = raw["proposal"]
+            ids = proposal.get("event_ids", [])
+            if (proposal.get("kind") not in limits or not isinstance(ids, list) or not 1 <= len(ids) <= 4
+                    or any(type(index) is not int or not 0 <= index < len(events) for index in ids) or len(set(ids)) != len(ids)
+                    or (attempt == 1 and proposal["kind"] != "setup")):
+                raise ValueError("Invalid intro proposal; use relevant setup when a successful play cannot be verified")
+            selected = sorted([events[index] for index in ids], key=lambda event: event["start"])
+            frames = {}
+            for event in selected:
+                regions = [(event["start"], event["end"], 2),
+                           (event["start"], min(event["end"], event["start"] + 6), 0.25),
+                           (max(event["start"], event["end"] - 6), event["end"], 0.25)]
+                for left, right, interval in regions:
+                    tag = _fingerprint({"source": inputs, "start": left, "end": right, "interval": interval})
+                    for frame in sample_boundary_frames(source, vod_dir / "frames" / "intro" / tag, interval,
+                                                        start=origin + left, end=origin + right):
+                        time = frame["timestamp"] - origin
+                        frames[time] = {**frame, "timestamp": time}
+            nearby_words = [word for word in words if any(event["start"] <= word["start"] < event["end"] for event in selected)]
+            if "refinement" not in raw:
+                raw["refinement"] = ai.refine_long_intro(proposal, selected, nearby_words, sorted(frames.values(), key=lambda frame: frame["timestamp"]), limits)
+                write_json(path, cache)
+            intro = _validate_long_intro(raw["refinement"], selected, limits, nearby_words, list(frames.values()), origin, mock=ai.mock)
+            if intro["kind"] != proposal["kind"]:
+                raise ValueError("Intro refinement changed its proposed kind")
+            body = after_setup if intro["kind"] == "setup" else story_segments
+            if not body or (intro["kind"] == "setup" and intro["source_end"] > body[0]["source_start"]):
+                raise ValueError("Setup intro must finish before the main edit's pre-action entry")
+            duration_seconds = intro_duration(intro) + overhead + sum(part["source_end"] - part["source_start"] for part in body)
+            if duration_seconds < 540:
+                story_segments = _extend_intro_body(vod_dir, ai, plan, beats, intro, story_segments, duration_seconds)
+                body = [part for part in story_segments if part["source_start"] >= first_action] if intro["kind"] == "setup" else story_segments
+                duration_seconds = intro_duration(intro) + overhead + sum(part["source_end"] - part["source_start"] for part in body)
+            if not 540 <= duration_seconds <= 720:
+                raise ValueError(f"Video duration {duration_seconds:.1f}s is outside 9-12 minutes after intro selection")
+            selected_ids = [beat["id"] for beat in beats if any(beat["start"] < part["source_end"] - origin
+                            and beat["end"] > part["source_start"] - origin for part in [*intro["segments"], *body])]
+            return {**plan, "long_version": 16, "intro_policy_version": 1, "intro": intro, "cold_open": intro,
+                    "story_segments": story_segments, "segments": body, "title_transition": TITLE_DISSOLVE,
+                    "duration": duration_seconds, "selected_ids": selected_ids,
+                    "gameplay_duration": sum(part["source_end"] - part["source_start"] for part in body)}
+        except ValueError as error:
+            feedback = str(error)
+            raw["validation_error"] = feedback
+            write_json(path, cache)
+    raise ValueError(f"Intro needs review after one setup retry: {feedback}")
 
 
 def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
     output = vod_dir / "long-plan.json"
     game = selected_game(vod_dir)
     editorial_end = game.get("result_end", game["gameplay_end"])
-    cache_key = {"game_id": game["id"], "gameplay_start": game["gameplay_start"], "editorial_end": editorial_end}
+    identity = {"game_id": game["id"], "gameplay_start": game["gameplay_start"], "editorial_end": editorial_end}
+    manifest = read_json(vod_dir / "manifest.json")
+    cache_key = {**identity, "beats": _file_fingerprint(vod_dir / "beats.json"),
+                 "transcripts": {name: _file_fingerprint(vod_dir / name) for name in ("transcript.json", "pregame-transcript.json")},
+                 "transcript_edits": _transcript_edits(vod_dir), "source_identity": _source_identity(Path(manifest["source"])),
+                 "editorial_model": getattr(ai, "editorial_model", "mock"), "mock": ai.mock, "boundary_version": 2}
+    review_signature = _file_fingerprint(vod_dir / "long-cuts.reviewed.json")
     if output.exists() and not force:
         cached = read_json(output)
-        if _cache_matches(cached, **cache_key, long_version=14):
+        if _cache_matches(cached, **cache_key, review_signature=review_signature) and cached.get("long_version") in (15, 16):
+            if cached.get("intro_policy_version") != 1:
+                cached = _apply_long_intro(vod_dir, ai, cached, _selected_beats(vod_dir, identity))
+                write_json(output, cached)
             return cached
-    beats = _selected_beats(vod_dir, cache_key)
+    beats = _selected_beats(vod_dir, identity)
     proposal_path = vod_dir / "long-proposals.json"
     cached_proposal = read_json(proposal_path) if proposal_path.exists() else {}
-    if not force and _cache_matches(cached_proposal, **cache_key, proposal_version=1):
+    if not force and _cache_matches(cached_proposal, **cache_key, proposal_version=2):
         model_plan = cached_proposal["plan"]
     else:
         model_plan = ai.plan_long(beats)
-        write_json(proposal_path, {**cache_key, "proposal_version": 1, "plan": model_plan})
-    model_plan = {**model_plan, "scenes": [scene for scene in model_plan.get("scenes", [])
-                                           if isinstance(scene, dict) and scene.get("start_beat_id", 0) >= 0]}
-    pregame = [beat for beat in beats if beat.get("phase") == "CHAMP_SELECT" and beat.get("importance", 1) >= 3]
-    if pregame:
-        setup = pregame[-2:]
-        model_plan["scenes"].append({"start_beat_id": setup[0]["id"], "end_beat_id": setup[-1]["id"],
-                                     "purpose": "pick, build, and challenge premise", "required": True})
-    scenes = _long_scene_ranges(beats, model_plan, target=530 if ai.mock else 740, maximum=690 if ai.mock else 780)
-    segments, cold_open = _refine_long_scenes(
-        vod_dir, ai, game, beats, scenes, cache_key, model_plan.get("cold_open_beat_id"), force
-    )
-    gameplay_duration = sum(segment["source_end"] - segment["source_start"] for segment in segments)
+        cached_proposal = {**cache_key, "proposal_version": 2, "plan": model_plan}
+        write_json(proposal_path, cached_proposal)
+    scenes = _long_scene_ranges(beats, model_plan)
     title_duration, end_card_duration = 5.0, 12.0
-    duration = gameplay_duration + cold_open["source_end"] - cold_open["source_start"] + title_duration + end_card_duration
-    while duration > 720:
-        removable = [
-            (max(beat.get("importance", 1) for beat in beats if segment["start_beat_id"] <= beat["id"] <= segment["end_beat_id"]), index)
-            for index, segment in enumerate(segments[:-1])
-            if not segment["required"] and not (segment["source_start"] <= cold_open["source_start"] < segment["source_end"])
-            and duration - (segment["source_end"] - segment["source_start"]) >= 540
-        ]
-        if not removable:
+    for attempt in range(2):
+        segments, cold_open = _refine_long_scenes(
+            vod_dir, ai, game, beats, scenes, cache_key, model_plan.get("cold_open_beat_id"), force and attempt == 0
+        )
+        gameplay_duration = sum(segment["source_end"] - segment["source_start"] for segment in segments)
+        overhead = cold_open["source_end"] - cold_open["source_start"] + title_duration + end_card_duration
+        duration = gameplay_duration + overhead
+        if 540 <= duration <= 720 or attempt == 1:
             break
-        _, index = min(removable)
-        removed = segments.pop(index)
-        gameplay_duration -= removed["source_end"] - removed["source_start"]
-        duration -= removed["source_end"] - removed["source_start"]
+        required = {(scene["start_beat_id"], scene["end_beat_id"]): scene for scene in scenes if scene.get("required") or (
+            type(model_plan.get("cold_open_beat_id")) is int and scene["start_beat_id"] <= model_plan["cold_open_beat_id"] <= scene["end_beat_id"])}
+        feedback = {"duration": duration, "footage_budget": [540 - overhead, 720 - overhead],
+                    "required_ranges": list(required), "cold_open_beat_id": model_plan.get("cold_open_beat_id"), "approved_segments": segments,
+                    "reason": "Add relevant complete moments" if duration < 540 else "Remove optional complete story units"}
+        signature = _fingerprint(feedback)
+        revision = cached_proposal.get("budget_revision", {})
+        if revision.get("signature") != signature:
+            revision = {"signature": signature, "plan": ai.plan_long(beats, budget_feedback=feedback)}
+            cached_proposal["budget_revision"] = revision
+            write_json(proposal_path, cached_proposal)
+        revised = revision["plan"]
+        next_scenes = _long_scene_ranges(beats, revised)
+        ranges = {(scene["start_beat_id"], scene["end_beat_id"]) for scene in next_scenes}
+        if not required.keys() <= ranges or revised.get("cold_open_beat_id") != model_plan.get("cold_open_beat_id"):
+            reason = "Budget revision needs review: it removed required premise/ending or changed the cold open"
+            write_json(vod_dir / "long-boundary-review.json", {**cache_key, "status": "needs_review", "reason": reason})
+            raise ValueError(reason)
+        # Reuse retained scenes exactly: a budget pass cannot change approved boundaries or purpose.
+        original = {(scene["start_beat_id"], scene["end_beat_id"]): scene for scene in scenes}
+        scenes = [original.get((scene["start_beat_id"], scene["end_beat_id"]), scene) for scene in next_scenes]
+        model_plan = revised
     if not 540 <= duration <= 720:
-        raise ValueError(f"Long edit duration {duration:.1f}s is outside 9-12 minutes")
-    selected = ([beat["id"] for segment in segments for beat in beats
-                 if segment["start_beat_id"] <= beat["id"] <= segment["end_beat_id"]]
-                if all("start_beat_id" in segment and "end_beat_id" in segment for segment in segments)
-                else [beat["id"] for scene in scenes for beat in beats[scene["first_index"] : scene["last_index"] + 1]])
+        reason = f"Long edit duration {duration:.1f}s is outside 9-12 minutes after one story-budget revision"
+        write_json(vod_dir / "long-boundary-review.json", {**cache_key, "status": "needs_review", "reason": reason})
+        raise ValueError(reason)
+    selected = [beat["id"] for beat in beats if any(beat["start"] < segment.get("relative_end", segment["source_end"] - game["gameplay_start"])
+                and beat["end"] > segment.get("relative_start", segment["source_start"] - game["gameplay_start"]) for segment in segments)]
     plan = {
-        **cache_key, "long_version": 14,
+        **cache_key, "long_version": 15, "review_signature": review_signature,
         "story": model_plan.get("story", ""),
         "selected_ids_raw": model_plan.get("selected_ids", []),
         "selected_ids": selected,
@@ -661,6 +1033,7 @@ def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
         "end_card_duration": end_card_duration,
         "segments": segments,
     }
+    plan = _apply_long_intro(vod_dir, ai, plan, beats, force)
     write_json(output, plan)
     return plan
 
@@ -724,30 +1097,24 @@ def _audio_spectrum(path: Path, start: float, duration_seconds: float = 5, fps: 
 def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = None) -> Image.Image:
     background = "#060b18"
     frame = Image.new("RGBA", (1280, 720), background)
-    if time < 0.18:
-        return frame.convert("RGB")
-
-    breath = 0.5 - 0.5 * math.cos(2 * math.pi * max(0, time - 0.5) / 2.1) if time >= 0.5 else 0
-    recoil = _ease((time - 0.18) / 0.32)
-    scale = 1.2 - 0.2 * recoil + 0.05 * breath
+    entrance = _ease(time)
+    breath = 0.5 - 0.5 * math.cos(2 * math.pi * max(0, time - 1) / 2.1)
+    scale = 0.98 + 0.02 * entrance + 0.015 * breath
     supersample = 4
-    icon = ImageOps.contain(logo, (260 * supersample, 260 * supersample), Image.Resampling.LANCZOS)
+    icon = ImageOps.contain(logo, (280 * supersample, 280 * supersample), Image.Resampling.LANCZOS)
     icon = icon.resize((round(icon.width * scale), round(icon.height * scale)), Image.Resampling.LANCZOS)
     icon_layer = Image.new("RGBA", (340 * supersample, 340 * supersample))
     icon_layer.alpha_composite(icon, ((icon_layer.width - icon.width) // 2, (icon_layer.height - icon.height) // 2))
     icon_layer = icon_layer.resize((340, 340), Image.Resampling.LANCZOS)
-    flash = Image.new("RGBA", frame.size)
-    flash_alpha = round(120 * (1 - _ease((time - 0.18) / 0.18)))
-    ImageDraw.Draw(flash).ellipse((500, 100, 780, 380), fill=(*ACCENT, flash_alpha))
-    frame = Image.alpha_composite(frame, flash.filter(ImageFilter.GaussianBlur(45)))
+    icon_layer.putalpha(icon_layer.getchannel("A").point(lambda alpha: round(alpha * entrance)))
     glow = Image.new("RGBA", frame.size)
     glow_expansion = round(18 * breath)
-    ImageDraw.Draw(glow).ellipse((390 - glow_expansion, -20 - glow_expansion, 890 + glow_expansion, 500 + glow_expansion),
-                                  fill=(*ACCENT, round(48 + 10 * breath)))
+    ImageDraw.Draw(glow).ellipse((390 - glow_expansion, 110 - glow_expansion, 890 + glow_expansion, 610 + glow_expansion),
+                                  fill=(*ACCENT, round((40 + 8 * breath) * entrance)))
     frame = Image.alpha_composite(frame, glow.filter(ImageFilter.GaussianBlur(round(110 + 8 * breath))))
     spectrum = spectrum or [0.0] * 48
     energy = sum(spectrum) / len(spectrum)
-    ring_scale, ring_size = 4, 440
+    ring_scale, ring_size = 4, 520
     ring_points = []
     for index in range(192):
         angle = math.pi / 2 + 2 * math.pi * index / 192
@@ -755,14 +1122,11 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
         band = min(46, int(band_position))
         fraction = band_position - band
         level = spectrum[band] * (1 - fraction) + spectrum[band + 1] * fraction
-        frequency_weight = 1.15 - 0.3 * band_position / 47
-        bottom_clearance = 1 - 0.85 * max(0, math.sin(angle)) ** 6
-        vibration = 26 * level ** 0.8 * frequency_weight * bottom_clearance
-        radius = 167.2 + 3 * breath + vibration
+        vibration = 32 * level ** 0.8 * entrance
+        radius = 200 + 3 * breath + vibration
         ring_points.append(((ring_size / 2 + math.cos(angle) * radius) * ring_scale,
                             (ring_size / 2 + math.sin(angle) * radius) * ring_scale))
     ring_points.append(ring_points[0])
-    entrance = _ease((time - 0.18) / 0.25)
     ring = Image.new("RGBA", (ring_size * ring_scale, ring_size * ring_scale))
     ring_glow = Image.new("RGBA", ring.size)
     ImageDraw.Draw(ring_glow).line(ring_points, fill=(*ACCENT, round((25 + 20 * energy) * entrance)),
@@ -771,34 +1135,8 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
     ImageDraw.Draw(ring).line(ring_points, fill=(*ACCENT, round((135 + 40 * energy) * entrance)),
                               width=3 * ring_scale, joint="curve")
     ring = ring.resize((ring_size, ring_size), Image.Resampling.LANCZOS)
-    frame.alpha_composite(ring, (420, 50))
-    frame.alpha_composite(icon_layer, (470, 100))
-
-    text = Image.new("RGBA", frame.size)
-    text_draw = ImageDraw.Draw(text)
-    font = ImageFont.truetype(FILE, 108)
-    label = "ElmilloR"
-    box = text_draw.textbbox((0, 0), label, font=font, stroke_width=4)
-    x = (1280 - box[2]) / 2
-    y = 470
-    shadow = Image.new("RGBA", frame.size)
-    ImageDraw.Draw(shadow).text((x, y + 6), label, font=font, fill=(0, 0, 0, round(85 + 20 * breath)), stroke_width=4,
-                                stroke_fill=(0, 0, 0, round(85 + 20 * breath)))
-    frame = Image.alpha_composite(frame, shadow.filter(ImageFilter.GaussianBlur(round(8 + 2 * breath))))
-    text_draw.text((x, y), label, font=font, fill=(*ACCENT, 255), stroke_width=4, stroke_fill=(5, 7, 6, 255))
-    pass_progress = next((progress for start in (0.65, 2.65) if 0 < (progress := (time - start) / 0.75) < 1), -1)
-    if 0 < pass_progress < 1:
-        highlight = Image.new("RGBA", frame.size)
-        ImageDraw.Draw(highlight).text((x, y), label, font=font, fill=(255, 252, 210, 210), stroke_width=4,
-                                       stroke_fill=(*ACCENT, 180))
-        center = x - 50 + (box[2] + 100) * _ease(pass_progress)
-        band = Image.new("L", frame.size)
-        ImageDraw.Draw(band).polygon(((center - 38, y + 140), (center + 2, y - 16),
-                                     (center + 58, y - 16), (center + 18, y + 140)), fill=220)
-        band = band.filter(ImageFilter.GaussianBlur(12))
-        highlight.putalpha(ImageChops.multiply(highlight.getchannel("A"), band))
-        text = Image.alpha_composite(text, highlight)
-    frame = Image.alpha_composite(frame, text)
+    frame.alpha_composite(ring, ((1280 - ring_size) // 2, (720 - ring_size) // 2))
+    frame.alpha_composite(icon_layer, ((1280 - 340) // 2, (720 - 340) // 2))
     if time > 4.70:
         fade = round(255 * (1 - _ease((time - 4.70) / 0.30)))
         frame.putalpha(fade)
@@ -933,8 +1271,11 @@ def _long_cards() -> tuple[Path, Path, Path]:
     if not source.exists() or read_json(source) != source_metadata:
         write_json(source, source_metadata)
     title_path, end_path = shared / "title-card.mp4", shared / "end-card.mp4"
-    if not title_path.exists() or abs(duration(title_path) - 5) > 0.1:
+    title_metadata = shared / "title-card.json"
+    title_key = {"version": 2, "icon": _file_fingerprint(icon), "music": _source_identity(music), "duration": 5}
+    if not title_path.exists() or not title_metadata.exists() or read_json(title_metadata) != title_key or abs(duration(title_path) - 5) > 0.1:
         _render_title_card(title_path, icon, music)
+        write_json(title_metadata, title_key)
     if not end_path.exists() or abs(duration(end_path) - 12) > 0.1:
         _render_end_card(end_path, _trailer(shared), kick, x)
     return title_path, end_path, music
@@ -944,25 +1285,47 @@ def render_long(vod_dir: Path) -> Path:
     manifest = read_json(vod_dir / "manifest.json")
     plan = read_json(vod_dir / "long-plan.json")
     output = vod_dir / "renders" / "long-rough.mp4"
-    if plan.get("long_version") != 14 or "cold_open" not in plan:
-        raise SystemExit("long-plan.json predates scene refinement; run plan-long first")
+    if plan.get("long_version") != 16 or plan.get("intro_policy_version") != 1:
+        raise SystemExit("long-plan.json predates setup/successful-play intros; run plan-long first")
     title, end, music = _long_cards()
+    intro_seconds = intro_duration(plan["cold_open"])
+    plan["title_transition"] = TITLE_DISSOLVE
+    plan["duration"] = (title_start(intro_seconds, plan["title_duration"]) + plan["title_duration"]
+                        + plan["end_card_duration"] + sum(part["source_end"] - part["source_start"] for part in plan["segments"]))
+    write_json(vod_dir / "long-plan.json", plan)
     render_long_video(Path(manifest["source"]), plan["segments"], plan["cold_open"], title, end, output,
-                      title_duration=plan["title_duration"], end_duration=plan["end_card_duration"],
-                      title_music=music, title_music_start=42.5, end_music=music, end_music_start=42)
+                       title_duration=plan["title_duration"], end_duration=plan["end_card_duration"],
+                       title_transition=plan["title_transition"],
+                       title_music=music, title_music_start=42.5, end_music=music, end_music_start=42)
+    info = media_info(output)
+    if abs(info["duration"] - plan["duration"]) > 0.5 or not info["audio"] or (info["width"], info["height"]) != (1280, 720):
+        raise ValueError("Long render does not match its precise edit plan")
     render_long_review(vod_dir)
     return output
 
 
 def _long_transitions(plan: dict) -> list[dict]:
-    cursor = plan["cold_open"]["source_end"] - plan["cold_open"]["source_start"]
-    transitions = [{"output_time": cursor, "label": "cold open -> channel title"}]
+    intro_parts = plan["cold_open"].get("segments") or [plan["cold_open"]]
+    transitions = []
+    cursor = 0
+    for index, part in enumerate(intro_parts[:-1]):
+        cursor += part["source_end"] - part["source_start"]
+        transitions.append({"output_time": cursor, "label": f"intro {index + 1} -> intro {index + 2}",
+                            "outgoing_source_end": part["source_end"], "incoming_source_start": intro_parts[index + 1]["source_start"]})
+    cursor = title_start(intro_duration(plan["cold_open"]), plan["title_duration"],
+                         plan.get("title_transition", TITLE_DISSOLVE))
+    transitions.append({"output_time": cursor, "label": "intro -> icon card", "dissolve_seconds": plan.get("title_transition", TITLE_DISSOLVE)})
     cursor += plan["title_duration"]
     transitions.append({"output_time": cursor, "label": "channel title -> premise"})
     for index, segment in enumerate(plan["segments"]):
         cursor += segment["source_end"] - segment["source_start"]
         label = "result -> end card" if index == len(plan["segments"]) - 1 else f"scene {index + 1} -> scene {index + 2}"
-        transitions.append({"output_time": cursor, "label": label})
+        next_segment = plan["segments"][index + 1] if index + 1 < len(plan["segments"]) else None
+        transitions.append({"output_time": cursor, "label": label,
+                            "outgoing_source_end": segment["source_end"], "exit_reason": segment.get("end_reason", ""),
+                            "incoming_source_start": next_segment["source_start"] if next_segment else None,
+                            "entry_reason": next_segment.get("start_reason", "") if next_segment else "Reusable end card",
+                            "scene_id": segment.get("scene_id")})
     return transitions
 
 
@@ -972,9 +1335,9 @@ def render_long_review(vod_dir: Path) -> Path:
     if not source.exists():
         raise SystemExit("Render the long video before creating its transition review")
     transitions = _long_transitions(plan)
-    write_json(vod_dir / "long-review.json", {"duration": plan["duration"], "transitions": transitions})
+    write_json(vod_dir / "long-review.json", {"duration": plan["duration"], "window_seconds": 8, "transitions": transitions})
     intervals = [
-        {"source_start": max(0, item["output_time"] - 2), "source_end": min(plan["duration"], item["output_time"] + 2)}
+        {"source_start": max(0, item["output_time"] - 4), "source_end": min(plan["duration"], item["output_time"] + 4)}
         for item in transitions
     ]
     output = vod_dir / "renders" / "long-transitions.mp4"
@@ -982,13 +1345,13 @@ def render_long_review(vod_dir: Path) -> Path:
     return output
 
 
-def _spoken_span(quote: str, words: list[dict], start: float, end: float) -> tuple[float, float] | None:
+def _spoken_span(quote: str, words: list[dict], start: float, end: float, *, minimum_tokens: int = 2) -> tuple[float, float] | None:
     def tokens(text: str) -> list[str]:
         plain = "".join(letter for letter in unicodedata.normalize("NFD", text.casefold()) if not unicodedata.combining(letter))
         return re.findall(r"\w+", plain)
 
     phrase = tokens(quote)
-    if len(phrase) < 2:
+    if len(phrase) < minimum_tokens:
         return None
     spoken = [(token, float(word["start"]), float(word["end"])) for word in words
               if start <= float(word.get("start", -1)) < end

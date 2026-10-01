@@ -34,10 +34,14 @@ workspace/<vod-id>/
   pregame-transcript.json  cached champion-select transcription when available
   beats.json               variable editorial units split near speech pauses
   long-proposals.json      raw global long-form scene selection
-  long-cuts.json           raw local AI boundary decisions for long-form scenes
-  long-cuts.reviewed.json  optional reviewed boundary overrides keyed by beat range
-  long-plan.json           refined scenes, cold open, and reusable-card durations
-  long-review.json         labeled output times for every long-form transition
+  long-cuts.json           v2 raw event-location and precise-boundary decisions keyed by beat range
+  long-cuts.reviewed.json  optional input-bound overrides with per-scene raw_signature/decision
+  long-boundary-review.json ready/needs_review status with failing scene and reason
+  frames/long-boundaries/*/frames.json decoded source-relative frame times and sampling identity
+  long-intro.json          raw setup/successful-play proposal and frame/quote verification
+  long-intro-budget.json   optional raw selection of extra main-video events after a concise intro
+  long-plan.json           v16 intro, retained story/body ranges, anchors and dissolve-aware durations
+  long-review.json         labeled joins with source times, entry/exit reasons and 8s review windows
   short-proposals.json     cached raw candidate stories from beat evidence
   short-visual-proposals.json raw visual leads from transcript-poor runs
   short-callback-proposals.json raw selected-game spoken-premise / visual-payoff leads
@@ -80,15 +84,44 @@ Per-VOD terms take priority when building Whisper's size-limited prompt.
   payoff, and cut dead tails after the reaction.
 - Reviewed game boundaries may define `result_end`; long-form output must end
   on that Nexus/result beat rather than post-game review.
-- Long-form planning selects complete chronological scenes, then a second cached
-  pass uses dense local frames and timestamped words to start before setup/action
-  and end after the outcome/reaction. Reviewed corrections remain separate from
-  raw model answers. Duration balancing keeps contiguous context instead of
-  punching holes into scenes; it does not force filler from each third.
-- The actual final fight/result remains in the edit. The strongest verified payoff
-  is duplicated as a cold open for its complete natural duration, capped at 20 seconds.
-- A reusable 2-second animated `ElmilloR` bumper reveals the channel website icon
-  with a camera-flare sweep. A reusable 12-second Fiddlesticks trailer end card
+- Long-form selection keeps adjacent story units separate and never pads them to a
+  footage target or unconditionally inserts pregame. A cached event-location pass
+  uses 2s decoded samples with 20s surrounding context; it may expand once by 30s
+  when setup/outcome is missing. A precise pass inspects +/-3s around EACH entry/exit
+  at 0.25s spacing (one retry at +/-6s). Decisions include action, outcome, reaction
+  and optional recall/shop/travel/wait anchors with frame/quote evidence.
+  A scene may retain 1-6 chronological ranges to omit internal downtime.
+  Start before action with necessary approach/premise; exit at recall onset or
+  Arena between-round downtime after outcome and useful dialogue complete.
+  Code protects words, checks continuing speech, and revalidates anchors, bounds,
+  dense windows and non-overlap after adjustment. Invalid decisions require review,
+  never silently restore the rough range. Reviewed corrections remain separate and
+  bind to both input metadata and the fingerprint of the raw scene answer.
+  Once cuts are approved, budgeting can request one cached global selection revision
+  to add/remove optional complete story units, preserving required premise, ending,
+  cold-open scene and retained boundaries. If still outside 540-720s it requires review.
+  Model, boundary prompt version, source, beats and transcript fingerprints invalidate
+  editorial caches without redownloading or retranscribing media.
+- The actual final fight/result remains in the edit. An independently cached intro
+  pass chooses relevant champion-select/early-game setup (8-40s, up to four cuts)
+  or a complete successful cool play by ElmilloR (5-20s, one cut). Cold opens require
+  his own visible success: deaths, blunders, failed predictions and teammate-only
+  highlights are disallowed. An unsuccessful verification retries once as setup.
+  Setup replaces pre-action preparation and the body resumes before the first fight;
+  cold opens remain duplicated in their chronological scene. Short intros are not
+  padded: if needed, one additional cached selection adds a complete main-video event,
+  refining only new units and preserving all approved ranges. `story_segments`
+  preserves the unabridged scene selection; `segments` is the post-intro body.
+  `intro` contains kind/reason/evidence and source ranges. `cold_open` aliases it
+  for the renderer contract; intro length is the sum of ranges, not their outer span.
+- A reusable 5-second icon-only card gently fades in a centered website icon,
+  glow and full circular audio-reactive ring, without text, recoil or flash.
+  A 0.5s gameplay-to-card dissolve overlaps the final intro footage with the card;
+  all duration, music and transition arithmetic subtracts that overlap. Intro speech
+  is retained through its end. Music starts 1s before card appearance, takes 2s to
+  reach its reduced gain, and fades out over 1s using quadratic curves. The master
+  caches its version, icon and music identity in `assets/long/title-card.json`.
+  A reusable 12-second Fiddlesticks trailer end card
   carries subscribe, Kick, and X messaging through 0:10, then fades through the
   end. Shared source media and MP4 masters are cached under
   `assets/long/`, never in a VOD workspace.
@@ -124,7 +157,38 @@ Per-VOD terms take priority when building Whisper's size-limited prompt.
 
 ## Rendering
 
-FFmpeg seeks each selected scene independently, then handles deterministic cuts,
+### Thumbnail artwork
+
+The thumbnail stage uses approved YouTube examples from
+`assets/thumbnails/references.json` as a cached visual reference library.
+`thumbnail-brief.json` contains three evidence-backed concepts; Nano produces a
+cached narrative art direction and exact foreground-asset placement per concept.
+`gpt-image-2.5-sunburst` edits a masked placement template at 1536x864, generating
+scene artwork, effects and headline treatment. Pillow restores the original
+reaction cutout and official icon layer after resizing to 1280x720. Normalized
+head crops live in `assets/faces/framing.json`.
+
+Paid image requests are content-addressed by settings, prompt, reference bytes
+and mask. Raw PNGs, request JSON, usage records, layout/mask PNGs and direction
+answers stay under `renders/thumbnails/`. `image-usage.json` tracks actual costs
+or conservative reservations, and image SDK retries are disabled. Mock fixtures
+retain the deterministic renderer without image calls or reference downloads.
+
+Full-size candidates and 280x158 previews receive a Nano comparison stored in
+`review.raw.json`, preserving the raw model judgment alongside conservatively
+validated publication checks. The best candidate can still be unpublishable.
+Selection remains explicit, with human overrides separate from AI decisions.
+`--revise` edits one candidate without style-reference images (which can leak
+another creator's face); the whole original photo pane is locked/restored to
+prevent shifted duplicate heads. Corrections and resulting versioned renders
+are recorded separately in `revisions.reviewed.json`. Matching base-image
+digests preserve revisions across rerenders; changed bases invalidate them.
+
+FFmpeg seeks five seconds before each selected scene to decode reference frames,
+then trims video and audio explicitly to the approved source interval. Boundary
+sampling uses the same pre-roll and stores presentation times before resetting
+output PTS. This prevents late starts on MPEG-TS VODs with non-zero input clocks.
+It then handles deterministic cuts,
 reusable-card animation, and vertical composition. Iteration 1 uses
 ASS/libass for active-word captions without adding a rendering stack. Add
 Remotion only when motion graphics need animation that ASS cannot express.

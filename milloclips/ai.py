@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -9,18 +10,33 @@ from typing import Any
 
 from openai import OpenAI
 
-from .io import write_json
+from .io import read_json, write_json
 
 
 STATES = ["OTHER", "QUEUE", "CHAMP_SELECT", "LOADING", "IN_GAME", "POST_GAME"]
 BEAT_TYPES = ["SETUP", "COMBAT", "REACTION", "STRATEGY", "FARMING", "TRAVEL", "SHOPPING", "DEAD", "RESULT"]
-THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance"}
-THUMBNAIL_FILLER = {"a", "al", "como", "con", "de", "el", "en", "es", "esto", "fucking", "fck", "jugué", "jugue", "la", "locura", "me", "mi", "mí", "mira", "momento", "muy", "para", "pick", "que", "rarísimo", "si", "un", "una", "va", "volando", "yo"}
+THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal"}
+THUMBNAIL_FILLER = {"a", "al", "como", "con", "de", "el", "en", "es", "esto", "fucking", "fck", "jugué", "jugue", "la", "locura", "me", "mi", "mí", "mira", "momento", "muy", "para", "pick", "que", "rarísimo", "si", "un", "una", "va", "volando", "yo", "he", "ha", "lo", "los", "las", "este", "esta", "esto", "qué", "pero", "y"}
 THUMBNAIL_ACTOR = {"jugué", "jugue", "jugando", "me", "mi", "mí", "mío", "mio", "yo"}
 
 
 def _words(value: str) -> set[str]:
     return set(re.findall(r"[a-záéíóúüñ0-9]+", value.casefold()))
+
+
+THUMBNAIL_PREFERENCES = Path(__file__).resolve().parent.parent / "assets" / "thumbnails" / "preferences.md"
+
+
+def thumbnail_preferences(vod_dir: Path | None = None) -> str:
+    channel = THUMBNAIL_PREFERENCES.read_text(encoding="utf-8") if THUMBNAIL_PREFERENCES.exists() else ""
+    local = vod_dir / "thumbnail-feedback.reviewed.md" if vod_dir else None
+    if local and local.exists():
+        return channel + "\n\nReview notes for THIS VIDEO ONLY:\n" + local.read_text(encoding="utf-8")
+    return channel
+
+
+def thumbnail_copy(value: str) -> str:
+    return re.sub(r"\b(?:en\s+)?(?:apoyo|soporte)\b", lambda match: "SUPPORT" if match[0].isupper() else "support", value, flags=re.IGNORECASE)
 
 
 class AI:
@@ -43,10 +59,11 @@ class AI:
         content: list[dict] = [{"type": "text", "text": prompt}]
         for image in images or []:
             encoded = base64.b64encode(image.read_bytes()).decode()
+            mime = "image/png" if image.suffix.lower() == ".png" else "image/jpeg"
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": detail},
+                    "image_url": {"url": f"data:{mime};base64,{encoded}", "detail": detail},
                 }
             )
         response = self.client.chat.completions.create(
@@ -232,6 +249,58 @@ Images are grouped in beat order, three images per beat.
             raise ValueError("Editorial game ranking did not return a valid score for every game")
         return sorted(ranked.values(), key=lambda item: item["score"], reverse=True)
 
+    def propose_long_intro(self, events: list[dict], story: str, limits: dict, *, feedback: str | None = None) -> dict:
+        if self.mock:
+            setup = [event for event in events if event["setup_eligible"]][:3]
+            return {"kind": "setup", "event_ids": [event["id"] for event in setup], "reason": "Synthetic game premise"}
+        return self._json(
+            "Return JSON only. Choose an introduction BEFORE the icon card for League/ElmilloR fans. Prefer relevant champion-select "
+            "thinking or early-game speech explaining the champion, mode, build, unusual mechanic or challenge we "
+            "are entering. Do not choose unrelated pregame banter. Use kind='setup' and 1-4 setup_eligible event IDs; "
+            "the card then skips loading/preparation and the main edit starts just BEFORE the first action. Include "
+            "enough of the actual premise to replace those pre-action scenes, with no padding or repeated questions. "
+            "Alternatively use kind='cold_open' and ONE combat event containing an actually COOL SUCCESSFUL play by "
+            "ElmilloR himself. NEVER a death, blunder, lost fight, failed prediction, teammate highlight while he "
+            "spectates, or merely his reaction to someone else's play. A cold open needs visible success, not a boast. "
+            "If no such play is evidenced choose setup. Return {\"kind\":\"setup\",\"event_ids\":[0,1],\"reason\":\"...\"}. "
+            f"Story: {story}. Edited-duration limits: {json.dumps(limits)}. Events: {json.dumps(events, ensure_ascii=False)}. "
+            + (f"Previous decision failed validation; repair using setup, not a failed play: {feedback}" if feedback else ""),
+            model=self.editorial_model,
+        )
+
+    def refine_long_intro(self, proposal: dict, events: list[dict], words: list[dict], frames: list[dict], limits: dict) -> dict:
+        if self.mock:
+            remaining = min(30, limits["setup"][1])
+            parts = []
+            for event in events:
+                length = min(remaining, event["end"] - event["start"])
+                if length > 0:
+                    parts.append({"event_id": event["id"], "start": event["start"], "end": event["start"] + length})
+                    remaining -= length
+            return {**proposal, "segments": parts,
+                    "subject": "elmiillor", "outcome": "setup", "complete": True, "related_to_selected_game": True,
+                    "evidence": {"kind": "speech", "time": events[0]["start"], "quote": "synthetic setup"}}
+        return self._json(
+            "Return JSON only. Precisely edit and VERIFY this pre-card intro. Times are seconds from GAME start; negative times are "
+            "champion select. For setup preserve complete relevant premise sentences, remove silence/loading/waits, "
+            "and use up to FOUR ranges within the corresponding allowed event. The intro replaces all pre-action "
+            "setup in the main edit, so include champion/build/game context needed for its first action. "
+            "For cold_open use ONE 5-20s range, start BEFORE the cool play, retain its actual successful payoff; "
+            "ElmilloR must perform it, not be dead or spectating. Explicitly reject fails, deaths, losses and "
+            "unproved boasts. If success is not VISIBLY established return {\"reject\":true,\"reason\":\"...\"}; "
+            "a memorable fail is STILL disallowed. For setup do not invent a successful play. "
+            "Respect the supplied edited-duration limits; don't pad routine footage to meet them. Choose source "
+            "frame or word boundaries, never split speech. Return kind, subject='elmiillor', outcome='setup' or "
+            "'success', cool_play=true ONLY for a successful play, complete=true, related_to_selected_game=true, "
+            "reason and segments [{event_id,start,end}]. Supply evidence={kind:'speech',time,quote} with an exact "
+            "relevant setup quote for setup; or {kind:'visual',time,detail} describing ElmilloR's VISIBLE success "
+            "for cold_open. The evidence must be inside retained footage. Only cite supplied image timestamps. "
+            f"Proposal: {json.dumps(proposal, ensure_ascii=False)}. Allowed events: {json.dumps(events, ensure_ascii=False)}. "
+            f"Limits: {json.dumps(limits)}. Words: {json.dumps(words, ensure_ascii=False)}. "
+            f"Frame times: {json.dumps([frame['timestamp'] for frame in frames])}",
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model, detail="high",
+        )
+
     def plan_long(self, beats: list[dict], *, budget_feedback: dict | None = None) -> dict:
         if self.mock:
             selected = [beat for beat in beats if beat["keep"]]
@@ -266,7 +335,9 @@ Images are grouped in beat order, three images per beat.
             "scene mid-sentence. Scene ranges use inclusive adjacent beat IDs and should usually last 20-90 seconds. "
             "Mark the actual story premise and ending required=true; optional scenes must be removable without "
             "orphaning a setup or payoff. Select pregame speech only if relevant to this story; do not force it. "
-            "Choose one later high-impact beat for a 5-20 second cold-open teaser; it will also remain in its normal "
+            "Nominate a successful ElmilloR play as cold_open_beat_id, or an opening premise beat when no cool "
+            "successful play exists. Never nominate his failure/death. This is only an intro hint: a separate pass "
+            "will decide setup versus successful-play cold open. A later teaser remains in its normal "
             "chronological scene. ElmilloR himself must be the active subject through his play, call, joke, or reaction; "
             "never choose a teammate highlight while he is dead or spectating. Return JSON only: "
             '{"scenes":[{"start_beat_id":0,"end_beat_id":3,"purpose":"specific story job","required":true}],'
@@ -295,10 +366,12 @@ Images are grouped in beat order, three images per beat.
     def refine_long_scene(self, scene: dict, beats: list[dict], words: list[dict], frames: list[dict], *, cold_open: bool) -> dict:
         if self.mock:
             parts = scene.get("located_segments") or [{"start": scene["start"], "end": scene["end"]}]
+            if not scene.get("located_segments") and scene["start"] < 0 < scene["end"]:
+                parts = [{"start": scene["start"], "end": 0}, {"start": 0, "end": scene["end"]}]
             answer = {"segments": [
                 {**part, "action_start": part["start"] + min(2, (part["end"] - part["start"]) / 4),
                  "outcome_time": part["end"] - 1, "reaction_end": part["end"] - 0.5,
-                 "downtime_start": None, "downtime_kind": "none", "event_kind": "combat",
+                 "downtime_start": None, "downtime_kind": "none", "event_kind": "speech" if part["end"] <= 0 else "combat",
                  "start_reason": "Synthetic pre-action setup", "end_reason": "Synthetic completed reaction",
                  "evidence": {}} for part in parts
             ], "needs_earlier_context": False, "needs_later_context": False}
@@ -328,7 +401,8 @@ Images are grouped in beat order, three images per beat.
             "Each evidence object has kind='visual', time equal to a SUPPLIED image timestamp, detail of what is visible; "
             "or kind='speech', time and an EXACT quote from timestamped words. Anchor times must equal evidence times. "
             "reaction_end denotes the last necessary reaction anchor; retain its whole spoken phrase. "
-            "In precise pass start/end must stay in their corresponding boundary_windows AND allowed_region. "
+            "In precise pass start/end must stay in their corresponding boundary_windows AND allowed_region, "
+            "and cold_open_start/end must stay in cold_open_windows. Choose inspected frame/word times, not guessed decimals. "
             "If completion is outside a dense window request more context instead of guessing. "
             + ("Also choose the complete most amazing or punchy 5-20 second ElmilloR moment as "
                "cold_open_start/cold_open_end. ElmilloR himself must be the active subject through his play, call, joke, "
@@ -351,11 +425,11 @@ Images are grouped in beat order, three images per beat.
             [Path(frame["path"]) for frame in frames], model=self.editorial_model, detail="high" if scene.get("boundary_pass") == "precise" else "low",
         )
 
-    def thumbnail_concepts(self, beats: list[dict], story: str, images: list[Path]) -> list[dict]:
+    def thumbnail_concepts(self, beats: list[dict], story: str, images: list[Path], force: bool = False, references: list[dict] | None = None, reactions: list[dict] | None = None) -> list[dict]:
         if self.mock:
             choices = [("ME PASÓ ESTO", "action", "shocked"),
                        ("JUGUÉ ESTO", "identity", "hold-on"),
-                       ("ME VOLVIÓ LOCO", "action", "hyped")]
+                       ("ME VOLVIÓ LOCO", "action", "smiling")]
             return [
                 {"title": headline.title(), "headline": headline, "hook": "high-stakes/amazing moment",
                  "template": template, "expression": expression, "beat_id": beats[index % len(beats)]["id"]}
@@ -364,58 +438,163 @@ Images are grouped in beat order, three images per beat.
         evidence = [{key: beat.get(key) for key in ("id", "type", "importance", "text", "reason")} for beat in beats]
         prompt = """
 Create exactly three distinct Spanish YouTube title/thumbnail concepts for this FINAL League edit.
+Think punchy League creator packaging: expressive streamer face, one dominant game subject,
+very short readable copy. Choose the three strongest DISTINCT hooks from this video's evidence.
+Do not force one action, one champion, and one strategy candidate; candidate numbers have no meaning.
+Each becomes a Sunburst-generated composition with an exact real reaction photo and optional exact icons.
+Think cinematically staged, game-faithful Rift/character artwork, a relevant build or statistic,
+or a simpler close-perspective Rift backdrop and exceptionally strong headline. No mandatory slots.
+Use reference examples for visual language, never copy their content or people's faces.
+Choose different hooks, not synonyms. Headlines must be natural Spanish, never keyword soup.
+Do not copy incomplete sentences as titles. Use complete, natural ideas grounded in this video.
+Write natural Spanish gaming packaging. First-person copy is optional: the face already identifies
+ElmilloR. The title and thumbnail headline must work together to raise a specific viewer question.
+Identify the relevant champion from each concept's evidence. Do not require all three to feature
+the same champion. A teammate's play is not ElmilloR's achievement. Images match evidence list order.
+Include a canonical Riot champion asset name only when identified and relevant; never invent it.
+Optional assets: up to six objects {"kind":"item"|"rune","key":"numeric Riot ID"}.
+Only request an icon when the supplied evidence establishes that exact item/rune;
+omit uncertain IDs. Do not add unrelated icons as decoration.
 For hook, use EXACTLY one of these strings: "high-stakes/amazing moment",
-"unusual pick/role/challenge", "bold claim/strategy", "extremely good performance".
+"unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal".
 A strategy can claim it works only when the evidence proves its payoff. Do not turn a hypothetical
 ("podría", "casi", "si") into an achieved result. Headlines are 2-4 Spanish words, all-caps-friendly,
-punchy editorial paraphrases. Every specific noun or claim in both title and headline must appear
-verbatim in the cited evidence; only generic words such as MIRA, ESTO, MOMENTO, QUÉ, and LOCURA may
-be added. Both title and headline must relate the event to Elmiillor in first person (JUGUÉ, ME, MI,
-YO); never use a bare enemy or teammate champion as the subject. Titles complement rather than repeat
+punchy editorial paraphrases. Claims must be supported by the cited evidence, but natural Spanish
+paraphrases and grammar are encouraged. Relate the story to Elmiillor's actual experience;
+never attribute an enemy or teammate's achievement to him. Titles complement rather than repeat
 the headline. Use template action, identity, or strategy.
-Expressions: shocked for stakes, hold-on for unusual/challenge, hyped for strategy/performance,
-smiling for satisfying payoff. Cite a supplied beat_id. Return JSON only:
+Available expressions: shocked, hold-on, overly-hyped, smiling. Prefer smiling for positive/playful
+hooks and normal excitement. Reserve overly-hyped for RARE, genuinely extreme emotional peaks:
+ordinary wins or strong plays are not enough. Explain the exceptional evidence and why smiling
+would undersell it if selecting overly-hyped. Still use shock or skepticism when the actual hook
+calls for them; do not force smiles onto disasters. Cite a supplied beat_id. Return JSON only:
 Each concept must include evidence: an exact short phrase copied from its cited beat's spoken text.
 If a supplied beat cannot support a concise truthful concept, omit it rather than guessing.
-{"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","expression":"shocked","beat_id":1,"evidence":"exact copied phrase","champion":"Fiddlesticks"}]}
+{"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","background":"gameplay","expression":"shocked","beat_id":1,"evidence":"exact copied phrase","champion":""}]}
         Story: """ + story + "\nEvidence:\n" + json.dumps(evidence, ensure_ascii=False)
-        parsed = self._json(prompt, images, model=getattr(self, "editorial_model", getattr(self, "model", "gpt-5-nano")))
+        preferences = thumbnail_preferences(self.vod_dir)
+        prompt += "\nPersistent human thumbnail feedback (apply to all candidates):\n" + preferences
+        if references:
+            prompt += "\nStyle reference images follow the gameplay evidence images. Learn the visual approach, not their subjects.\n" + json.dumps(references, ensure_ascii=False)
+        if reactions:
+            prompt += (
+                "\nAfter the style references come the AVAILABLE REAL REACTION PHOTOS, in catalog order. "
+                "Choose expression ONLY from this catalog by inspecting the actual eyes, mouth, hands and intensity. "
+                "For each concept include reaction_reason explaining how that photo fits this specific evidence, "
+                "headline, emotional promise and viewer question. Never choose overly-hyped just because it is a build or win. "
+                "Use smiling more often for positive concepts; overly-hyped needs evidence of an exceptional emotional peak. "
+                "Prefer a calm positive smile for confident/playful hooks, not closed-eye shouting by default. "
+                "Do not enforce artificial variety if two concepts genuinely need the same emotion. "
+                "Do not invent an unavailable pose. Catalog: " + json.dumps(reactions, ensure_ascii=False)
+            )
+        reference_images = [Path(reference["path"]) for reference in references or []]
+        reaction_images = [Path(reaction["path"]) for reaction in reactions or []]
+        concept_images = [*images, *reference_images, *reaction_images]
+        model = getattr(self, "editorial_model", getattr(self, "model", "gpt-5-nano"))
+        signature = hashlib.sha256((prompt + model).encode() + b"".join(image.read_bytes() for image in concept_images)).hexdigest()
+        cache_path = self.vod_dir / "thumbnail-concepts.cache.json"
+        cache = read_json(cache_path) if cache_path.exists() and not force else {}
+        if cache.get("signature") != signature:
+            cache = {"signature": signature}
+        parsed = cache.get("concepts")
+        if parsed is None:
+            parsed = self._json(prompt, concept_images, model=model, detail="high")
+            cache["concepts"] = parsed
+            write_json(cache_path, cache)
         write_json(self.vod_dir / "thumbnail-concepts.raw.json", parsed)
+        audit = cache.get("audit") or self._json(
+            "Audit proposed League thumbnail concepts against the supplied evidence. Natural Spanish "
+            "paraphrases are allowed; unsupported game entities, achievements, outcomes, and teammate "
+            "plays attributed to ElmilloR are not. Reject awkward/incomplete copy and generic ME PASÓ ESTO "
+            "headlines. Check requested champion/item/rune assets against gameplay and speech. "
+            "A strategy claim needs evidence; do not turn plans/hypotheticals into achievements. "
+            'Return JSON {"reviews":[{"index":0,"accepted":true,"reason":"..."}]}, one per concept. '
+            "Concepts: " + json.dumps(parsed.get("concepts", []), ensure_ascii=False)
+            + " Evidence: " + json.dumps(evidence, ensure_ascii=False)
+            + " Persistent human preferences: " + preferences
+            + " Reaction-photo catalog: " + json.dumps(reactions or [], ensure_ascii=False)
+            + " Reaction photos follow the gameplay images; reject an emotionally misleading photo choice.", [*images, *reaction_images],
+            model=getattr(self, "editorial_model", getattr(self, "model", "gpt-5-nano")),
+        )
+        write_json(self.vod_dir / "thumbnail-concepts.audit.raw.json", audit)
+        cache["audit"] = audit
+        write_json(cache_path, cache)
+        accepted = {review.get("index") for review in audit.get("reviews", []) if review.get("accepted") is True}
         valid_ids = {beat["id"] for beat in beats}
         output = []
         by_id = {beat["id"]: beat for beat in beats}
-        for concept in parsed.get("concepts", []):
+        for index, concept in enumerate(parsed.get("concepts", [])):
+            if index not in accepted:
+                continue
             if concept.get("beat_id") not in valid_ids:
                 continue
             headline = str(concept.get("headline", "")).strip()[:40]
             if not headline or len(headline.split()) > 4:
                 continue
             evidence = str(concept.get("evidence", "")).strip()[:160]
-            source = _words(str(by_id[concept["beat_id"]].get("text", "")))
             cited = _words(evidence)
             title = str(concept.get("title", headline)).strip()[:100]
-            claims = _words(f"{title} {headline}") - THUMBNAIL_FILLER
-            if not evidence or not cited & source or any(not any(word.startswith(term) or term.startswith(word) for word in source) for term in claims):
+            if not evidence or evidence.casefold() not in str(by_id[concept["beat_id"]].get("text", "")).casefold():
                 continue
             if concept.get("hook") not in THUMBNAIL_HOOKS or concept.get("template") not in {"action", "identity", "strategy"}:
                 continue
-            if concept.get("expression") not in {"shocked", "hold-on", "hyped", "smiling"}:
+            available = {reaction["expression"] for reaction in reactions} if reactions else {"shocked", "hold-on", "overly-hyped", "smiling"}
+            if concept.get("expression") not in available:
+                continue
+            if reactions and not str(concept.get("reaction_reason", "")).strip():
                 continue
             if {"podria", "podría", "casi", "si"} & cited and concept["hook"] in {"high-stakes/amazing moment", "extremely good performance"}:
                 continue
-            if not _words(f"{title} {headline}") & THUMBNAIL_ACTOR:
-                continue
             output.append({
-                "title": title,
-                "headline": headline.upper(),
+                "title": thumbnail_copy(title),
+                "headline": thumbnail_copy(headline).upper(),
                 "hook": str(concept.get("hook", "")).strip()[:120],
                 "template": str(concept.get("template", "action")).strip(),
+                "background": "splash" if concept.get("background") == "splash" else "gameplay",
                 "expression": str(concept.get("expression", "shocked")).strip(),
+                "reaction_reason": str(concept.get("reaction_reason", "")).strip()[:500],
                 "beat_id": concept["beat_id"],
                 "evidence": evidence,
                 "champion": str(concept.get("champion", "")).strip() if str(concept.get("champion", "")).isalnum() else "",
+                "assets": [asset for asset in concept.get("assets", []) if isinstance(asset, dict)
+                           and asset.get("kind") in {"item", "rune"}
+                            and isinstance(asset.get("key"), str) and asset["key"].isdecimal()][:6],
             })
         return output[:3]
+
+    def choose_thumbnail(self, candidates: list[dict]) -> dict:
+        if self.mock:
+            return {"winner": 1, "reason": "Mock comparison; review the contact sheet."}
+        decision = self._json(
+            "Compare these three rendered Spanish League YouTube thumbnails, in numbered order. "
+            "Choose for readable mobile-size text, recognizable large ElmilloR reaction, clear game subject, "
+            "visual hierarchy, contrast, and a compelling truthful hook. Penalize awkward Spanish, "
+            "clutter, client/browser/loading backgrounds, and obscured faces. Do not claim CTR estimates. "
+            "Gaming vocabulary such as support, build, carry, AP is appropriate in Spanish League copy. "
+            "The first images are full-size candidates in order; the remaining images are their actual "
+            "280x158 feed previews in the same order. Check exact headline spelling/accents/completeness "
+            "against the EXACT metadata headline, not an imagined corrected version; check unreadable text, synthetic extra people/faces, fake stats, incorrect champions "
+            "and whether icons obscure eyes/mouth. The real photo was composited from source, so don't "
+            "mistake its crop or outline for a generated likeness. Reject publication if an essential check fails. "
+            'Return JSON {"winner":1,"reason":"short explanation","candidates":'
+            '[{"number":1,"strength":"...","weakness":"...","headline_matches":true,'
+            '"extra_people":false,"publishable":false}],"publishable":false,"next_changes":["..."]}. '
+            "Fill every check for every candidate. extra_people means any human outside the single supplied "
+            "ElmilloR photo, including duplicated ElmilloR heads or people copied from style references. "
+            "If essential corrections are still required, publishable MUST be false for that candidate. "
+            "Choosing a winner does not mean it is publishable. If none meets the human preferences, "
+            "set publishable false and explain concrete next changes. Persistent human preferences: "
+            + thumbnail_preferences(self.vod_dir) + " Candidate evidence: " + json.dumps(candidates, ensure_ascii=False),
+            [Path(row["render"]) for row in candidates] + [Path(row["mobile_render"]) for row in candidates if row.get("mobile_render")], model=self.editorial_model, detail="high",
+        )
+        # Preserve the original judgment; incomplete/contradictory checks cannot
+        # turn a best-of-three recommendation into publication approval.
+        original = dict(decision)
+        winner = next((row for row in decision.get("candidates", []) if row.get("number") == decision.get("winner")), {})
+        decision["publishable"] = (decision.get("publishable") is True and winner.get("publishable") is True
+                                    and winner.get("headline_matches") is True and winner.get("extra_people") is False)
+        decision["raw_model_output"] = original
+        return decision
 
     def shorts(self, beats: list[dict]) -> list[dict]:
         evidence = [

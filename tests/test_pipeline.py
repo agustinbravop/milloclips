@@ -112,9 +112,11 @@ class EditingTests(unittest.TestCase):
                 patch("milloclips.editing._long_scene_ranges", return_value=[{"first_index": 0, "last_index": 1,
                       "start_beat_id": 8, "end_beat_id": 9, "purpose": "ElmilloR play"}]), \
                 patch("milloclips.editing._refine_long_scenes", side_effect=refine), \
+                patch("milloclips.editing._apply_long_intro", side_effect=lambda _root, _ai, plan, *_args: plan), \
                 patch("milloclips.editing.short_candidates", return_value=[callback]):
             directory = Path(temporary)
             (directory / "short-candidates.json").write_text("{}")
+            (directory / "manifest.json").write_text(json.dumps({"source": "source.mp4", "duration": 700}))
             plan_long(directory, FakeAI(), force=True)
 
     def test_long_prompt_requires_elmiillor_as_cold_open_subject(self) -> None:
@@ -138,7 +140,7 @@ class EditingTests(unittest.TestCase):
         plan = {"cold_open": {"source_start": 10, "source_end": 16}, "title_duration": 2.5,
                 "segments": [{"source_start": 20, "source_end": 30}, {"source_start": 40, "source_end": 55}]}
         transitions = _long_transitions(plan)
-        self.assertEqual([item["output_time"] for item in transitions], [6, 8.5, 18.5, 33.5])
+        self.assertEqual([item["output_time"] for item in transitions], [5.5, 8.0, 18.0, 33.0])
         self.assertEqual(transitions[-1]["label"], "result -> end card")
 
     def test_shared_artwork_download_uses_browser_user_agent(self) -> None:
@@ -179,9 +181,12 @@ class EditingTests(unittest.TestCase):
                               root / "long.mp4")
         command = ffmpeg.call_args.args[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("[v0][a0][titlev][titlea][v1][a1][endv][enda]concat=n=4", filters)
-        self.assertIn("[2:a]atrim=duration=2.5", filters)
+        self.assertIn("[introv][introa][v1][a1][endv][enda]concat=n=3", filters)
+        self.assertIn("xfade=transition=fade:duration=0.5:offset=6.5", filters)
+        self.assertIn("[2:a]atrim=duration=2.0", filters)
         self.assertIn("[3:a]atrim=duration=8.0", filters)
+        self.assertIn("[1:v]trim=start=5:end=25,setpts", filters)
+        self.assertIn("[1:a]atrim=start=5:end=25,asetpts", filters)
         self.assertNotIn("zoompan=", filters)
         self.assertNotIn("-loop", command)
         self.assertEqual(command.count("-ss"), 2)
@@ -189,7 +194,7 @@ class EditingTests(unittest.TestCase):
 
     def test_title_music_straddles_the_card_in_both_directions(self) -> None:
         self.assertEqual(title_music_window(6.0, 5.0),
-                         {"delay": 5.0, "length": 7.0, "fade_in": 1.0, "fade_out": 1.0})
+                          {"delay": 4.5, "length": 7.0, "fade_in": 2.0, "fade_out": 1.0})
         with tempfile.TemporaryDirectory() as temporary, patch("milloclips.media.run_ffmpeg") as ffmpeg:
             root = Path(temporary)
             render_long_video(Path("source.mp4"), [{"source_start": 20, "source_end": 40}],
@@ -199,10 +204,10 @@ class EditingTests(unittest.TestCase):
             music = str(root / "sting.webm")
         command = ffmpeg.call_args.args[0]
         filters = command[command.index("-filter_complex") + 1]
-        # The 6s cold open puts the card at 6s-11s, so a 7s clip at 5s covers 1s before and 1s after it.
+        # Card starts with the dissolve at 5.5s; music starts at 4.5s and peaks at 6.5s.
         self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42.5", "-t", "7.0", "-i"])
-        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=6.0:d=1.0:curve=qua,adelay=5000:all=1[musica]", filters)
-        self.assertIn("volume=0.309375", filters)
+        self.assertIn("afade=t=in:st=0:d=2.0:curve=qua,afade=t=out:st=6.0:d=1.0:curve=qua,adelay=4500:all=1[musica]", filters)
+        self.assertIn("volume=0.07734375", filters)
         self.assertIn("amix=inputs=2:duration=first:dropout_transition=0:normalize=0", filters)
         # loudnorm has to run before the mix or its dynamic gain reshapes both fades.
         self.assertLess(filters.index("loudnorm"), filters.index("amix"))
@@ -220,7 +225,7 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42", "-t", "13.0", "-i"])
         self.assertIn("[3:a]atrim=duration=12.0", filters)
         self.assertIn("volume=0[enda]", filters)
-        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=12.0:d=1:curve=qua,adelay=30000:all=1[endmusic]", filters)
+        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=12.0:d=1:curve=qua,adelay=29500:all=1[endmusic]", filters)
 
     def test_legacy_matching_transcript_is_reused(self) -> None:
         class FakeAI:

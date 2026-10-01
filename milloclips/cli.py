@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .ai import AI
+from .ai import AI, THUMBNAIL_PREFERENCES
 from .editing import analyze, find_shorts, games, plan_long, render_long, render_long_review, render_short, render_shorts, select_game
 from .fixture import create_fixture
 from .io import read_json, record_run, write_json
@@ -13,7 +13,7 @@ from .kick import print_vods, recent_vods
 from .media import ingest
 from .reports import scan_report, shorts_report
 from .scan import scan
-from .thumbnails import render_thumbnails
+from .thumbnails import prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
 
 
 def parser() -> argparse.ArgumentParser:
@@ -70,7 +70,18 @@ def parser() -> argparse.ArgumentParser:
     thumbnails.add_argument("vod_dir", type=Path)
     thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
     thumbnails.add_argument("--force", action="store_true")
+    choice = thumbnails.add_mutually_exclusive_group()
+    choice.add_argument("--choose", type=int, choices=(1, 2, 3), help="Select an existing candidate without regenerating")
+    choice.add_argument("--choose-ai", action="store_true", help="Compare existing candidates with AI and select a winner")
+    choice.add_argument("--feedback", help="Save human thumbnail feedback; does not render")
+    choice.add_argument("--prepare-references", action="store_true", help="Cache the channel reference thumbnails without calling AI")
+    choice.add_argument("--revise", type=int, choices=(1, 2, 3), help="Edit one generated candidate, preserving its original assets")
+    thumbnails.add_argument("--edit", help="Targeted image-edit instruction, used with --revise")
+    thumbnails.add_argument("--headline", help="Optional reviewed replacement headline, used with --revise")
+    thumbnails.add_argument("--feedback-scope", choices=("channel", "video"), default="channel",
+                            help="Apply feedback across videos (default) or only this VOD workspace")
     thumbnails.add_argument("--mock", action="store_true")
+    thumbnails.add_argument("--image-budget", type=float, default=5, help="Cumulative image-generation spend/reservation limit for this workspace, in USD")
     thumbnails.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
     thumbnails.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
 
@@ -198,9 +209,39 @@ def main() -> None:
         shorts_report(vod_dir)
         return
     if arguments.command == "thumbnails":
+        if (arguments.edit is not None or arguments.headline is not None) and arguments.revise is None:
+            raise SystemExit("--edit and --headline require --revise")
+        if arguments.revise is not None:
+            if not arguments.edit:
+                raise SystemExit("--revise requires --edit")
+            print(revise_thumbnail(vod_dir, arguments.revise, arguments.edit, AI(vod_dir, model=arguments.model,
+                  editorial_model=arguments.editorial_model, mock=arguments.mock), arguments.headline, arguments.image_budget))
+            return
+        if arguments.prepare_references:
+            for reference in prepare_thumbnail_references():
+                print(reference["path"])
+            return
+        if arguments.feedback is not None:
+            if not arguments.feedback.strip():
+                raise SystemExit("Thumbnail feedback must not be empty")
+            target = THUMBNAIL_PREFERENCES if arguments.feedback_scope == "channel" else vod_dir / "thumbnail-feedback.reviewed.md"
+            if arguments.feedback_scope == "video" and not vod_dir.is_dir():
+                raise SystemExit("Video feedback requires an existing VOD workspace")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            previous = target.read_text(encoding="utf-8") if target.exists() else ""
+            target.write_text(previous + "\n- " + arguments.feedback.strip() + "\n", encoding="utf-8")
+            print(target)
+            return
+        if arguments.choose is not None:
+            print(select_thumbnail(vod_dir, arguments.choose))
+            return
+        if arguments.choose_ai:
+            print(select_thumbnail(vod_dir, ai=AI(vod_dir, model=arguments.model,
+                  editorial_model=arguments.editorial_model, mock=arguments.mock)))
+            return
         print(render_thumbnails(vod_dir, arguments.faces, arguments.force, AI(
             vod_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=arguments.mock,
-        )))
+        ), image_budget=arguments.image_budget))
         return
 
     ai = AI(vod_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=arguments.mock)

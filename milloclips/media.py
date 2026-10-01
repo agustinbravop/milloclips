@@ -152,7 +152,7 @@ def sample_boundary_frames(source: Path, output: Path, interval: float, *, start
     if not all(math.isfinite(value) for value in (start, end, interval)) or not 0 <= start < end or interval <= 0:
         raise ValueError("Boundary sampling requires finite positive bounds and interval")
     stat = source.stat()
-    key = {"version": 1, "source": str(source.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+    key = {"version": 2, "source": str(source.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
            "start": start, "end": end, "interval": interval, "width": width}
     manifest = output / "frames.json"
     if manifest.exists():
@@ -162,18 +162,23 @@ def sample_boundary_frames(source: Path, output: Path, interval: float, *, start
     output.mkdir(parents=True, exist_ok=True)
     for old in output.glob("frame_*.jpg"):
         old.unlink()
+    # ponytail: 5s covers current VOD GOPs; increase if missing reference frames persist.
+    seek = max(0, start - 5)
     result = run_ffmpeg([
-        "-ss", str(start), "-i", str(source), "-t", str(end - start),
-        "-vf", f"trim=duration={end - start},select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval})',scale={width}:-2,showinfo",
+        "-ss", str(seek), "-t", str(end - seek + 1), "-i", str(source),
+        "-vf", f"trim=start={start - seek}:end={end - seek},select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval})',"
+               f"scale={width}:-2,showinfo,setpts=PTS-STARTPTS",
         "-fps_mode", "vfr", "-q:v", "4", "-start_number", "0", str(output / "frame_%06d.jpg"),
     ], capture=True)
     times = [float(value) for value in re.findall(r"\bpts_time:([-+\d.eE]+)", result.stderr)]
     paths = sorted(output.glob("frame_*.jpg"))
     if not paths or len(paths) != len(times):
         raise ValueError("Decoded boundary frame timestamps do not match extracted images")
-    frames = [{"timestamp": start + time, "path": str(path.resolve())} for time, path in zip(times, paths)]
+    frames = [{"timestamp": seek + time, "path": str(path.resolve())} for time, path in zip(times, paths)]
     if any(not start - 0.001 <= frame["timestamp"] < end + 0.001 for frame in frames):
         raise ValueError("Decoded boundary frame lies outside its source window")
+    if frames[0]["timestamp"] - start > max(interval, 1 / 30) + 0.05:
+        raise ValueError("Decoder missed the beginning of the boundary window; more pre-roll is needed")
     write_json(manifest, {"sampling": key, "frames": frames})
     return frames
 
@@ -241,16 +246,39 @@ def render_segments(source: Path, segments: list[dict], output: Path) -> None:
     )
 
 
-def title_music_window(cold_open_duration: float, title_duration: float, *, lead: float = 1.0, tail: float = 1.0) -> dict:
+TITLE_DISSOLVE = 0.5
+
+
+def intro_duration(intro: dict) -> float:
+    return sum(part["source_end"] - part["source_start"] for part in intro.get("segments") or [intro])
+
+
+def title_start(intro_duration: float, title_duration: float, dissolve: float = TITLE_DISSOLVE) -> float:
+    if not all(math.isfinite(value) for value in (intro_duration, title_duration, dissolve)) or not 0 <= dissolve < min(intro_duration, title_duration):
+        raise ValueError("Title dissolve must fit inside the intro and card")
+    return intro_duration - dissolve
+
+
+def title_music_window(cold_open_duration: float, title_duration: float, *, lead: float = 1.0, tail: float = 1.0,
+                       dissolve: float = TITLE_DISSOLVE) -> dict:
     """Place a music clip so it fades in before the title card and out after it."""
-    if title_duration <= 0 or lead < 0 or tail < 0 or cold_open_duration < lead:
+    card_start = title_start(cold_open_duration, title_duration, dissolve)
+    if lead < 0 or tail < 0 or card_start < lead or title_duration + tail < 1:
         raise ValueError("Title music window does not fit around the title card")
     return {
-        "delay": cold_open_duration - lead,
+        "delay": card_start - lead,
         "length": lead + title_duration + tail,
-        "fade_in": lead,
+        "fade_in": lead + 1.0,
         "fade_out": tail,
     }
+
+
+def _segment_input(source: Path, segment: dict) -> tuple[list[str], float, float]:
+    start, end = segment["source_start"], segment["source_end"]
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in (start, end)) or not 0 <= start < end:
+        raise ValueError("Source segments must have finite positive bounds")
+    seek = max(0, start - 5)
+    return ["-ss", str(seek), "-t", str(end - seek + 1), "-i", str(source)], start - seek, end - seek
 
 
 def render_long_video(
@@ -263,9 +291,10 @@ def render_long_video(
     *,
     title_duration: float = 2.5,
     end_duration: float = 8.0,
+    title_transition: float = TITLE_DISSOLVE,
     title_music: Path | None = None,
     title_music_start: float = 0.0,
-    title_music_volume: float = 0.309375,
+    title_music_volume: float = 0.07734375,
     end_music: Path | None = None,
     end_music_start: float = 0.0,
     end_music_volume: float = 0.55,
@@ -273,22 +302,42 @@ def render_long_video(
     if not segments or not 0 <= cold_open["source_start"] < cold_open["source_end"]:
         raise ValueError("Long video requires gameplay scenes and a valid cold open")
     output.parent.mkdir(parents=True, exist_ok=True)
-    source_parts = [cold_open, *segments]
+    intro_parts = cold_open.get("segments") or [cold_open]
+    if any(right["source_start"] < left["source_end"] for left, right in zip(intro_parts, intro_parts[1:])):
+        raise ValueError("Intro source ranges must be chronological and non-overlapping")
+    source_parts = [*intro_parts, *segments]
+    intro_seconds = intro_duration(cold_open)
+    card_start = title_start(intro_seconds, title_duration, title_transition)
+    if any(right["source_start"] < left["source_end"] for left, right in zip(segments, segments[1:])):
+        raise ValueError("Long source segments must be chronological and non-overlapping")
+    seeks = [_segment_input(source, part) for part in source_parts]
     chains: list[str] = []
-    for index, segment in enumerate(source_parts):
+    for index, (_arguments, left, right) in enumerate(seeks):
         chains.extend((
-            f"[{index}:v]setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=30[v{index}]",
-            f"[{index}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[a{index}]",
+            f"[{index}:v]trim=start={left}:end={right},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,settb=AVTB[v{index}]",
+            f"[{index}:a]atrim=start={left}:end={right},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[a{index}]",
         ))
     title_input = len(source_parts)
     end_input = title_input + 1
     chains.extend((
-        f"[{title_input}:v]trim=duration={title_duration},setpts=PTS-STARTPTS,fps=30[titlev]",
-        f"[{title_input}:a]atrim=duration={title_duration},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[titlea]",
+        f"[{title_input}:v]trim=duration={title_duration},setpts=PTS-STARTPTS,setsar=1,fps=30,settb=AVTB[titlev]",
+        f"[{title_input}:a]atrim=duration={title_duration - title_transition},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[titlea]",
         f"[{end_input}:v]trim=duration={end_duration},setpts=PTS-STARTPTS,fps=30[endv]",
         f"[{end_input}:a]atrim=duration={end_duration},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[enda]",
     ))
-    ordered = ["[v0][a0]", "[titlev][titlea]", *[f"[v{index}][a{index}]" for index in range(1, len(source_parts))], "[endv][enda]"]
+    intro_v, intro_a = "v0", "a0"
+    if len(intro_parts) > 1:
+        chains.append(f"{''.join(f'[v{index}][a{index}]' for index in range(len(intro_parts)))}"
+                      f"concat=n={len(intro_parts)}:v=1:a=1[preface][prefacea]")
+        chains.append("[preface]fps=30,settb=AVTB[prefacev]")
+        intro_v, intro_a = "prefacev", "prefacea"
+    if title_transition:
+        chains.extend((f"[{intro_v}][titlev]xfade=transition=fade:duration={title_transition}:offset={card_start}[introv]",
+                       f"[{intro_a}][titlea]concat=n=2:v=0:a=1[introa]"))
+        ordered = ["[introv][introa]"]
+    else:
+        ordered = [f"[{intro_v}][{intro_a}]", "[titlev][titlea]"]
+    ordered += [*[f"[v{index}][a{index}]" for index in range(len(intro_parts), len(source_parts))], "[endv][enda]"]
     chains.extend((
         f"{''.join(ordered)}concat=n={len(ordered)}:v=1:a=1[rawv][rawa]",
         "[rawv]fps=30[v]",
@@ -298,7 +347,7 @@ def render_long_video(
     music_labels: list[str] = []
     next_input = end_input + 1
     if title_music is not None:
-        window = title_music_window(cold_open["source_end"] - cold_open["source_start"], title_duration)
+        window = title_music_window(intro_seconds, title_duration, dissolve=title_transition)
         music_inputs += ["-ss", str(title_music_start), "-t", str(window["length"]), "-i", str(title_music)]
         chains.append(
             f"[{next_input}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume={title_music_volume},"
@@ -311,7 +360,7 @@ def render_long_video(
     if end_music is not None:
         lead = 1.0
         length = lead + end_duration
-        delay = (cold_open["source_end"] - cold_open["source_start"] + title_duration
+        delay = (card_start + title_duration
                  + sum(segment["source_end"] - segment["source_start"] for segment in segments) - lead)
         if delay < 0:
             raise ValueError("End music lead does not fit before the end card")
@@ -327,16 +376,13 @@ def render_long_video(
     else:
         chains.append("[proga]anull[a]")
     run_ffmpeg([
-        *[argument for segment in source_parts for argument in (
-            "-ss", str(segment["source_start"]), "-t", str(segment["source_end"] - segment["source_start"]),
-            "-i", str(source),
-        )],
+        *[argument for arguments, _left, _right in seeks for argument in arguments],
         "-t", str(title_duration), "-i", str(title_card),
         "-t", str(end_duration), "-i", str(end_card),
         *music_inputs,
         "-filter_complex", ";".join(chains),
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-movflags", "+faststart", str(output),
     ])
 
@@ -382,9 +428,10 @@ def render_vertical(
     fonts = Path(__file__).with_name("fonts").resolve()
     chains = []
     inputs = []
-    for index, segment in enumerate(segments):
-        chains.extend((f"[{index}:v]setpts=PTS-STARTPTS[v{index}]",
-                       f"[{index}:a]asetpts=PTS-STARTPTS,aresample=48000:first_pts=0[a{index}]"))
+    seeks = [_segment_input(source, segment) for segment in segments]
+    for index, (_arguments, left, right) in enumerate(seeks):
+        chains.extend((f"[{index}:v]trim=start={left}:end={right},setpts=PTS-STARTPTS[v{index}]",
+                       f"[{index}:a]atrim=start={left}:end={right},asetpts=PTS-STARTPTS,aresample=48000:first_pts=0[a{index}]"))
         inputs.append(f"[v{index}][a{index}]")
     chains.extend((f"{''.join(inputs)}concat=n={len(segments)}:v=1:a=1[rawv][rawa]",
                    "[rawv]split=3[face][game][hud]", f"[face]{face}[faceout]", f"[game]{game}[gameout]",
@@ -393,10 +440,7 @@ def render_vertical(
                     "[rawa]loudnorm,aresample=48000[a]"))
     run_ffmpeg(
         [
-            *[argument for segment in segments for argument in (
-                "-ss", str(segment["source_start"]), "-t", str(segment["source_end"] - segment["source_start"]),
-                "-i", str(source),
-            )],
+            *[argument for arguments, _left, _right in seeks for argument in arguments],
             "-filter_complex",
             ";".join(chains),
             "-map",
