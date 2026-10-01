@@ -71,7 +71,7 @@ def scan(vod_dir: Path, ai: AI, force: bool = False, coarse_interval: float = 30
         return read_json(output)["games"]
     manifest = read_json(vod_dir / "manifest.json")
     source = Path(manifest["source"])
-    coarse_frames = sample_frames(source, vod_dir / "frames" / "coarse", coarse_interval)
+    coarse_frames = sample_frames(source, vod_dir / "frames" / "coarse", coarse_interval, end=manifest["duration"], force=force)
     coarse = ai.classify_frames(coarse_frames, manifest["duration"])
 
     windows: list[tuple[float, float]] = []
@@ -89,7 +89,7 @@ def scan(vod_dir: Path, ai: AI, force: bool = False, coarse_interval: float = 30
 
     refined: list[dict] = []
     for index, (start, end) in enumerate(windows):
-        frames = sample_frames(source, vod_dir / "frames" / f"refined-{index:03d}", refine_interval, start=start, end=end)
+        frames = sample_frames(source, vod_dir / "frames" / f"refined-{index:03d}", refine_interval, start=start, end=end, force=force)
         refined.extend(ai.classify_frames(frames, manifest["duration"]))
 
     for start, end in windows:

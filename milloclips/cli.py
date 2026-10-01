@@ -6,9 +6,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .ai import AI
-from .editing import analyze, find_shorts, plan_long, render_long, render_long_review, render_short, render_shorts, select_game
+from .editing import analyze, find_shorts, games, plan_long, render_long, render_long_review, render_short, render_shorts, select_game
 from .fixture import create_fixture
-from .io import record_run
+from .io import read_json, record_run, write_json
 from .kick import print_vods, recent_vods
 from .media import ingest
 from .reports import scan_report, shorts_report
@@ -23,6 +23,13 @@ def parser() -> argparse.ArgumentParser:
     ingest_parser = commands.add_parser("ingest", help="Download a Kick VOD or register a local media file")
     ingest_parser.add_argument("source")
     ingest_parser.add_argument("--root", type=Path, default=Path("workspace"))
+
+    auto = commands.add_parser("auto", help="Run a VOD through analysis, editing, and rendering")
+    auto.add_argument("source", help="Kick URL, local video, or existing VOD workspace")
+    auto.add_argument("--root", type=Path, default=Path("workspace"))
+    auto.add_argument("--force", action="store_true")
+    auto.add_argument("--model", default="gpt-5-nano")
+    auto.add_argument("--editorial-model")
 
     vods = commands.add_parser("vods", help="List recent Kick VODs without downloading them")
     vods.add_argument("channel", nargs="?", default="elmiillor")
@@ -39,6 +46,8 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("vod_dir", type=Path)
         command.add_argument("--mock", action="store_true")
         command.add_argument("--force", action="store_true")
+        command.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
+        command.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
 
     select = commands.add_parser("select", help="Select a detected game")
     select.add_argument("vod_dir", type=Path)
@@ -62,6 +71,8 @@ def parser() -> argparse.ArgumentParser:
     thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
     thumbnails.add_argument("--force", action="store_true")
     thumbnails.add_argument("--mock", action="store_true")
+    thumbnails.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
+    thumbnails.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
 
     fixture = commands.add_parser("fixture", help="Run a synthetic Iteration 0 pipeline without an API key")
     fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"))
@@ -82,6 +93,62 @@ def main() -> None:
     if arguments.command == "ingest":
         print(ingest(arguments.source, arguments.root))
         return
+    if arguments.command == "auto":
+        source_path = Path(arguments.source).expanduser()
+        if source_path.is_dir() and (source_path / "manifest.json").exists():
+            vod_dir = source_path.resolve()
+        else:
+            vod_dir = ingest(arguments.source, arguments.root)
+        ai = AI(vod_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+        scan(vod_dir, ai, force=arguments.force)
+        games_found = games(vod_dir)
+        record_run(vod_dir, "scan", model=ai.model)
+        game_report = scan_report(vod_dir)
+        if not games_found:
+            raise SystemExit(f"No eligible games detected. See {game_report}")
+
+        analyses = []
+        for game in games_found:
+            game_dir = vod_dir / "game-analyses" / game["id"]
+            game_dir.mkdir(parents=True, exist_ok=True)
+            write_json(game_dir / "manifest.json", read_json(vod_dir / "manifest.json"))
+            write_json(game_dir / "games.json", {"games": [game]})
+            select_game(game_dir, game["id"])
+            game_ai = AI(game_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+            beats = analyze(game_dir, game_ai, force=arguments.force)
+            record_run(game_dir, "analyze", model=game_ai.model)
+            analyses.append({"game_id": game["id"], "duration": game["duration"], "beats": beats})
+
+        ranking = ai.rank_games(analyses)
+        write_json(vod_dir / "game-ranking.json", {"ranking": ranking})
+        winner_id = ranking[0]["game_id"]
+        winner_dir = vod_dir / "game-analyses" / winner_id
+        select_game(vod_dir, winner_id)
+        game_ai = AI(winner_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+        plan_long(winner_dir, game_ai, force=arguments.force)
+        record_run(winner_dir, "plan-long", model=game_ai.model)
+        long_video = render_long(winner_dir)
+        record_run(winner_dir, "render-long")
+        transition_reel = winner_dir / "renders" / "long-transitions.mp4"
+        record_run(winner_dir, "review-long")
+        candidates = find_shorts(winner_dir, game_ai, force=arguments.force)
+        record_run(winner_dir, "find-shorts", model=f"{game_ai.model}+{game_ai.editorial_model}")
+        shorts = render_shorts(winner_dir)
+        short_report = shorts_report(winner_dir)
+        record_run(winner_dir, "render-shorts")
+        thumbnail = render_thumbnails(winner_dir, Path("assets/faces"), arguments.force, game_ai)
+        outputs = {
+            "source_workspace": str(vod_dir), "selected_game": winner_id,
+            "scan_report": str(game_report), "ranking": str(vod_dir / "game-ranking.json"),
+            "long_video": str(long_video),
+            "transition_review": str(transition_reel), "short_candidates": len(candidates),
+            "shorts": [str(path) for path in shorts], "short_report": str(short_report),
+            "thumbnail": str(winner_dir / "renders" / "thumbnail.png"),
+            "thumbnail_contact_sheet": str(thumbnail),
+        }
+        write_json(vod_dir / "auto-summary.json", outputs)
+        print(vod_dir / "auto-summary.json")
+        return
     if arguments.command == "fixture":
         vod_dir = create_fixture(arguments.root, arguments.seconds)
         ai = AI(vod_dir, mock=True)
@@ -96,7 +163,7 @@ def main() -> None:
         plan_long(vod_dir, ai, force=arguments.force)
         record_run(vod_dir, "plan-long", model=ai.model, mock=True)
         find_shorts(vod_dir, ai, force=arguments.force)
-        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.shorts_model}", mock=True)
+        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.editorial_model}", mock=True)
         print(shorts_report(vod_dir))
         if arguments.render:
             print(render_long(vod_dir))
@@ -131,10 +198,12 @@ def main() -> None:
         shorts_report(vod_dir)
         return
     if arguments.command == "thumbnails":
-        print(render_thumbnails(vod_dir, arguments.faces, arguments.force, AI(vod_dir, mock=arguments.mock)))
+        print(render_thumbnails(vod_dir, arguments.faces, arguments.force, AI(
+            vod_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=arguments.mock,
+        )))
         return
 
-    ai = AI(vod_dir, mock=arguments.mock)
+    ai = AI(vod_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=arguments.mock)
     if arguments.command == "scan":
         scan(vod_dir, ai, force=arguments.force)
         record_run(vod_dir, "scan", model=ai.model, mock=arguments.mock)
@@ -149,5 +218,5 @@ def main() -> None:
         print(f"{vod_dir / 'long-plan.json'} ({plan['duration']:.1f}s)")
     elif arguments.command == "find-shorts":
         find_shorts(vod_dir, ai, force=arguments.force)
-        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.shorts_model}", mock=arguments.mock)
+        record_run(vod_dir, "find-shorts", model=f"{ai.model}+{ai.editorial_model}", mock=arguments.mock)
         print(shorts_report(vod_dir))

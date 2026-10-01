@@ -24,10 +24,10 @@ def _words(value: str) -> set[str]:
 
 
 class AI:
-    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", mock: bool = False, shorts_model: str | None = None):
+    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", mock: bool = False, editorial_model: str | None = None):
         self.vod_dir = vod_dir
         self.model = model
-        self.shorts_model = shorts_model or model
+        self.editorial_model = editorial_model or model
         self.mock = mock
         self.client = None if mock else OpenAI(api_key=self._key())
 
@@ -183,9 +183,62 @@ Images are grouped in beat order, three images per beat.
             )
         return output
 
-    def plan_long(self, beats: list[dict]) -> dict:
+    def rank_games(self, games: list[dict]) -> list[dict]:
+        if self.mock:
+            return sorted(
+                [
+                    {"game_id": game["game_id"], "score": sum(int(beat.get("importance", 1)) for beat in game["beats"]),
+                     "reason": "Synthetic ranking from beat importance"}
+                    for game in games
+                ],
+                key=lambda item: item["score"], reverse=True,
+            )
+        evidence = [
+            {
+                "game_id": game["game_id"],
+                "duration_seconds": game["duration"],
+                "beats": [
+                    {key: beat.get(key) for key in ("type", "importance", "keep", "text", "reason")}
+                    for beat in sorted(
+                        game["beats"], key=lambda beat: (bool(beat.get("keep")), beat.get("importance", 1)), reverse=True
+                    )[:30]
+                ],
+            }
+            for game in games
+        ]
+        parsed = self._json(
+            "Rank these League games for a coherent 9-12 minute Spanish YouTube edit. "
+            "Score each from 0 to 100 for story potential, humor/emotion, standout moments, "
+            "and editability. Prefer a clear arc and varied meaningful beats; penalize routine "
+            "or incoherent footage. Judge only supplied evidence. Return JSON only: "
+            '{"games":[{"game_id":"game-001","score":85,"reason":"specific evidence-based reason"}]}. '
+            "Include every game exactly once. Evidence: " + json.dumps(evidence, ensure_ascii=False),
+            model=self.editorial_model,
+        )
+        by_id = {game["game_id"] for game in games}
+        ranked = {}
+        for item in parsed.get("games", []):
+            if not isinstance(item, dict) or item.get("game_id") not in by_id:
+                continue
+            try:
+                score = max(0, min(100, float(item["score"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            ranked[item["game_id"]] = {
+                "game_id": item["game_id"], "score": score,
+                "reason": str(item.get("reason", ""))[:500],
+            }
+        if len(ranked) != len(games):
+            raise ValueError("Editorial game ranking did not return a valid score for every game")
+        return sorted(ranked.values(), key=lambda item: item["score"], reverse=True)
+
+    def plan_long(self, beats: list[dict], *, budget_feedback: dict | None = None) -> dict:
         if self.mock:
             selected = [beat for beat in beats if beat["keep"]]
+            # Mock fixture chooses a bounded continuous story, without padding real edits.
+            if selected:
+                start = selected[0]["start"]
+                selected = [beat for beat in beats if start <= beat["start"] < start + 565]
             scenes = []
             for beat in selected:
                 if scenes and beat["id"] == scenes[-1]["end_beat_id"] + 1:
@@ -211,12 +264,18 @@ Images are grouped in beat order, three images per beat.
             "before each action and its immediate outcome/reaction afterward. Include the pick/build premise, the "
             "strongest varied moments, escalating stakes, and the actual final fight/result. Do not start or end a "
             "scene mid-sentence. Scene ranges use inclusive adjacent beat IDs and should usually last 20-90 seconds. "
+            "Mark the actual story premise and ending required=true; optional scenes must be removable without "
+            "orphaning a setup or payoff. Select pregame speech only if relevant to this story; do not force it. "
             "Choose one later high-impact beat for a 5-20 second cold-open teaser; it will also remain in its normal "
             "chronological scene. ElmilloR himself must be the active subject through his play, call, joke, or reaction; "
             "never choose a teammate highlight while he is dead or spectating. Return JSON only: "
-            '{"scenes":[{"start_beat_id":0,"end_beat_id":3,"purpose":"specific story job"}],'
+            '{"scenes":[{"start_beat_id":0,"end_beat_id":3,"purpose":"specific story job","required":true}],'
             '"cold_open_beat_id":3,"story":"one sentence"}. Beats:\n'
             + json.dumps(compact, ensure_ascii=False)
+            + ("\nRevise the selection using actual refined durations below. Preserve every required scene range "
+               "and the cold-open scene. Keep approved ranges unchanged; add/remove optional COMPLETE story units "
+               "to meet the footage budget. Do not add filler or merely lengthen ranges. Feedback: "
+               + json.dumps(budget_feedback, ensure_ascii=False) if budget_feedback else ""), model=self.editorial_model
         )
         scenes = parsed.get("scenes", []) if isinstance(parsed.get("scenes"), list) else []
         selected_ids = [
@@ -235,29 +294,61 @@ Images are grouped in beat order, three images per beat.
 
     def refine_long_scene(self, scene: dict, beats: list[dict], words: list[dict], frames: list[dict], *, cold_open: bool) -> dict:
         if self.mock:
-            answer = {"start": scene["start"], "end": scene["end"], "reason": "synthetic boundaries"}
+            parts = scene.get("located_segments") or [{"start": scene["start"], "end": scene["end"]}]
+            answer = {"segments": [
+                {**part, "action_start": part["start"] + min(2, (part["end"] - part["start"]) / 4),
+                 "outcome_time": part["end"] - 1, "reaction_end": part["end"] - 0.5,
+                 "downtime_start": None, "downtime_kind": "none", "event_kind": "combat",
+                 "start_reason": "Synthetic pre-action setup", "end_reason": "Synthetic completed reaction",
+                 "evidence": {}} for part in parts
+            ], "needs_earlier_context": False, "needs_later_context": False}
             if cold_open:
-                answer.update({"cold_open_start": scene["start"], "cold_open_end": min(scene["end"], scene["start"] + 20)})
+                last = answer["segments"][-1]
+                answer.update({"cold_open_start": max(last["start"], last["end"] - 10), "cold_open_end": last["end"]})
             return answer
         return self._json(
-            "Return JSON only. Set precise source boundaries for this already-selected long-form League scene. "
-            "Timestamps are seconds from GAME START. Frames are one-second stills, not continuous video. Start just "
-            "before the necessary spoken premise or visible action, never during an exchange. End after the concrete "
-            "outcome and immediate reaction, never before a kill/fight resolves or mid-sentence. Aggressively remove "
-            "safe recall channels, shopping, walking to lane, waiting, and dead tails. Keep enough setup that a viewer "
-            "understands why the action matters. The returned start/end must stay inside allowed_region. "
+            "Return JSON only. Edit this selected scene for League/ElmilloR fans. Timestamps are seconds from GAME START. "
+            "These are timestamped decoded stills, NOT continuous video. In boundary_pass='locate', identify complete "
+            "events and rough retained ranges. In boundary_pass='precise', use the dense boundary windows to choose "
+            "exact entry/exit points; keep the same events, segment count and storyline. Use 1-6 chronological "
+            "non-overlapping segments to remove INTERNAL downtime, not just the scene's outer tails. Never merge "
+            "two fights through recall/shop/return travel. Return needs_earlier_context=true if the earliest frame "
+            "already shows the selected action underway, and needs_later_context=true if outcome/reaction is unresolved. "
+            "Do not invent a boundary when context is missing. Start before the action, normally with TWO seconds "
+            "of approach/target call; preserve a necessary setup sentence from its beginning. Finish the actual "
+            "outcome and immediate useful reaction. For Summoner's Rift cut at recall ONSET when dialogue is complete; "
+            "omit the channel, shopping and walk back. For Arena cut after round outcome/reaction, before routine "
+            "between-round shopping/waiting. A recall can be cancelled: do not discard a meaningful renewed fight. "
+            "Keep useful speech during recall/travel until its complete sentence/joke finishes, then cut. "
+            "Speech-only banter/setup is valid: event_kind='speech', action_start means premise-line start and "
+            "outcome_time means punchline/explanation. Never require a visual fight for a conversation. "
+            "Each segment needs start/end, action_start, outcome_time, reaction_end, downtime_start (null if none), "
+            "downtime_kind ('recall','shopping','travel','waiting','none'), event_kind ('combat' or 'speech'), "
+            "start_reason/end_reason, and evidence for action_start/outcome_time/reaction_end and any downtime_start. "
+            "Each evidence object has kind='visual', time equal to a SUPPLIED image timestamp, detail of what is visible; "
+            "or kind='speech', time and an EXACT quote from timestamped words. Anchor times must equal evidence times. "
+            "reaction_end denotes the last necessary reaction anchor; retain its whole spoken phrase. "
+            "In precise pass start/end must stay in their corresponding boundary_windows AND allowed_region. "
+            "If completion is outside a dense window request more context instead of guessing. "
             + ("Also choose the complete most amazing or punchy 5-20 second ElmilloR moment as "
                "cold_open_start/cold_open_end. ElmilloR himself must be the active subject through his play, call, joke, "
                "or reaction; never choose a teammate highlight while he is dead or spectating. It must contain visible "
                "action or an immediately compelling line and its payoff; never choose walking, waiting, setup without "
                "action, or an uneventful reaction. " if cold_open else "")
-            + "Return {\"start\":12.0,\"end\":45.0,\"reason\":\"...\""
+            + 'Return {"needs_earlier_context":false,"needs_later_context":false,"segments":'
+            '[{"start":12.0,"end":45.0,"action_start":14.0,"outcome_time":40.0,"reaction_end":43.0,'
+            '"downtime_start":45.0,"downtime_kind":"recall","event_kind":"combat",'
+            '"start_reason":"approach before engagement","end_reason":"recall begins after reaction",'
+            '"evidence":{"action_start":{"kind":"visual","time":14.0,"detail":"engagement begins"},'
+            '"outcome_time":{"kind":"visual","time":40.0,"detail":"fight resolves"},'
+            '"reaction_end":{"kind":"speech","time":43.0,"quote":"exact words"},'
+            '"downtime_start":{"kind":"visual","time":45.0,"detail":"recall channel begins"}}}]'
             + (",\"cold_open_start\":30.0,\"cold_open_end\":37.0" if cold_open else "")
             + "}. Scene: " + json.dumps(scene, ensure_ascii=False)
             + ". Beats: " + json.dumps(beats, ensure_ascii=False)
             + ". Timestamped words: " + json.dumps(words, ensure_ascii=False)
             + ". Supplied frame timestamps: " + json.dumps([frame["timestamp"] for frame in frames]),
-            [Path(frame["path"]) for frame in frames],
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model, detail="high" if scene.get("boundary_pass") == "precise" else "low",
         )
 
     def thumbnail_concepts(self, beats: list[dict], story: str, images: list[Path]) -> list[dict]:
@@ -288,7 +379,7 @@ Each concept must include evidence: an exact short phrase copied from its cited 
 If a supplied beat cannot support a concise truthful concept, omit it rather than guessing.
 {"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","expression":"shocked","beat_id":1,"evidence":"exact copied phrase","champion":"Fiddlesticks"}]}
         Story: """ + story + "\nEvidence:\n" + json.dumps(evidence, ensure_ascii=False)
-        parsed = self._json(prompt, images)
+        parsed = self._json(prompt, images, model=getattr(self, "editorial_model", getattr(self, "model", "gpt-5-nano")))
         write_json(self.vod_dir / "thumbnail-concepts.raw.json", parsed)
         valid_ids = {beat["id"] for beat in beats}
         output = []
@@ -363,7 +454,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
                 "Each scene uses inclusive beat IDs; target 20-45 seconds and never exceed 60 after trimming. "
                 "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"specific event\","
                 "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
-                + json.dumps(window, ensure_ascii=False), model=self.shorts_model,
+                + json.dumps(window, ensure_ascii=False), model=self.editorial_model,
             )
             if isinstance(parsed.get("candidates"), list):
                 candidates.extend(parsed["candidates"][:3])
@@ -375,7 +466,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "target 20-45 seconds and never exceed 60 after trimming, and identify the exact payoff beat. "
             "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"...\","
             "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
-            + json.dumps(evidence, ensure_ascii=False), model=self.shorts_model,
+            + json.dumps(evidence, ensure_ascii=False), model=self.editorial_model,
         )
         if isinstance(parsed.get("candidates"), list):
             candidates.extend(parsed["candidates"][:2])
@@ -394,7 +485,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "Return {\"events\":[{\"start\":1900,\"end\":1930,\"payoff\":1925,"
             "\"description\":\"visible factual event\"}]} or {\"events\":[]}. "
             "Game-relative seconds per image: " + json.dumps([frame["timestamp"] for frame in frames]),
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model,
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model,
         )
         return parsed.get("events", []) if isinstance(parsed.get("events"), list) else []
 
@@ -417,7 +508,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "payoff_beat_id, and scenes array of start_beat_id/end_beat_id pairs. "
             "Gameplay frames at game-relative seconds: " + json.dumps([frame["timestamp"] for frame in frames])
             + ". Earlier beat evidence and late beat IDs: " + json.dumps(beats, ensure_ascii=False),
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model,
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model,
         )
         return parsed.get("candidates", []) if isinstance(parsed.get("candidates"), list) else []
 
@@ -430,7 +521,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "an image where the literal ACE banner is present. Return {\"ace_time\":null} if none, "
             "otherwise {\"ace_time\":<exact supplied timestamp>}. Images are in order at "
             "game-relative seconds: " + json.dumps([frame["timestamp"] for frame in frames]),
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model,
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model,
         )
         time = parsed.get("ace_time")
         return float(time) if type(time) in (int, float) else None
@@ -473,7 +564,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             f"Beats: {json.dumps(beats, ensure_ascii=False)}. "
             f"Images in order: {json.dumps([frame['timestamp'] for frame in frames])}",
             [Path(frame["path"]) for frame in frames],
-            model=self.shorts_model, detail="high",
+            model=self.editorial_model, detail="high",
         )
 
     def choose_shorts(self, candidates: list[dict], images: list[Path]) -> list[int]:
@@ -491,7 +582,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "Return {\"selected_ids\":[0,1],\"reason\":\"why these beat the alternatives\"}. "
             "Candidate evidence (zero-based IDs): " + json.dumps(candidates, ensure_ascii=False),
             images,
-            model=self.shorts_model,
+            model=self.editorial_model,
         )
         return parsed.get("selected_ids", []) if isinstance(parsed.get("selected_ids"), list) else []
 
@@ -527,7 +618,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             f"Rough candidate: {json.dumps(candidate, ensure_ascii=False)}. "
             f"Words: {json.dumps(words, ensure_ascii=False)}. "
             f"Images in order: {json.dumps([frame['timestamp'] for frame in frames])}",
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model, detail="high",
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model, detail="high",
         )
 
     def audit_short(self, candidate: dict, words: list[dict], frames: list[dict]) -> dict:
@@ -551,7 +642,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             f"Candidate: {json.dumps(candidate, ensure_ascii=False)}. "
             f"Words in cut: {json.dumps(words, ensure_ascii=False)}. "
             f"Frames in order: {json.dumps([frame['timestamp'] for frame in frames])}",
-            [Path(frame["path"]) for frame in frames], model=self.shorts_model, detail="high",
+            [Path(frame["path"]) for frame in frames], model=self.editorial_model, detail="high",
         )
 
     def detect_layout(self, frame: Path) -> dict:

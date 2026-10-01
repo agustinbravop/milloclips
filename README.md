@@ -42,6 +42,7 @@ Place the key in the gitignored `.env` file: `OPENAI_API_KEY=...`.
 ```bash
 uv run milloclips vods --league-only
 uv run milloclips ingest <kick-url-or-local-video>
+uv run milloclips auto <kick-url-local-video-or-existing-vod-workspace>
 uv run milloclips scan workspace/<vod-id>
 uv run milloclips select workspace/<vod-id> game-001
 uv run milloclips analyze workspace/<vod-id>
@@ -56,6 +57,12 @@ uv run milloclips thumbnails workspace/f1ca1ecfc69f
 Use `--mock` on AI commands to exercise the pipeline without API calls. Every
 stage caches JSON artifacts under its VOD directory. Delete only the artifact
 for the stage that should be rerun, or pass `--force`.
+
+`auto` ingests or resumes a VOD, scans it, analyzes every detected game in an
+isolated `game-analyses/` cache, ranks the games editorially, and renders the
+long video, passing shorts, and thumbnail for the winner. It writes
+`game-ranking.json` and `auto-summary.json` in the VOD workspace. Use
+`--force` to refresh cached analysis stages.
 
 `plan-long` selects complete story scenes and caches its raw local boundary
 decisions in `long-cuts.json`; optional corrections belong in

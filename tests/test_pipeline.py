@@ -75,6 +75,17 @@ class GameDetectionTests(unittest.TestCase):
         self.assertEqual(games[0]["duration"], 900)
 
 
+class GameRankingTests(unittest.TestCase):
+    def test_mock_ranks_games_by_beat_importance(self) -> None:
+        ai = AI(Path("."), mock=True)
+        ranked = ai.rank_games([
+            {"game_id": "game-001", "duration": 900, "beats": [{"importance": 2}, {"importance": 1}]},
+            {"game_id": "game-002", "duration": 1000, "beats": [{"importance": 5}, {"importance": 4}]},
+        ])
+        self.assertEqual([item["game_id"] for item in ranked], ["game-002", "game-001"])
+        self.assertEqual(ranked[0]["score"], 9)
+
+
 class EditingTests(unittest.TestCase):
     def test_short_callback_does_not_replace_elmiillor_cold_open(self) -> None:
         beats = [

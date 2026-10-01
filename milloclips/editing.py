@@ -17,7 +17,7 @@ from yt_dlp import YoutubeDL
 from .ai import AI
 from .fonts import ASS_NAME, FILE
 from .io import read_json, write_json
-from .media import duration, extract_audio, ffmpeg, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_frames
+from .media import duration, extract_audio, ffmpeg, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_boundary_frames, sample_frames
 
 
 ACCENT = (234, 255, 32)
@@ -460,7 +460,7 @@ def _enforce_duration(
     return sorted(selected)
 
 
-def _long_scene_ranges(beats: list[dict], model_plan: dict, *, target: float = 530, maximum: float = 690) -> list[dict]:
+def _long_scene_ranges(beats: list[dict], model_plan: dict) -> list[dict]:
     by_id = {beat["id"]: index for index, beat in enumerate(beats)}
     scenes = []
     proposals = sorted(
@@ -499,77 +499,21 @@ def _long_scene_ranges(beats: list[dict], model_plan: dict, *, target: float = 5
                                "last_index": index, "start": float(beat["start"]), "end": float(beat["end"]),
                                "purpose": "selected story moment", "required": False})
 
-    boring = {"FARMING", "TRAVEL", "SHOPPING", "DEAD"}
-    for scene in scenes[1:]:
-        while scene["first_index"] < scene["last_index"] and beats[scene["first_index"]].get("type") in boring \
-                and beats[scene["first_index"]].get("importance", 1) < 3:
-            scene["first_index"] += 1
-        while scene["first_index"] < scene["last_index"] and beats[scene["last_index"]].get("type") in boring \
-                and beats[scene["last_index"]].get("importance", 1) < 3:
-            scene["last_index"] -= 1
-
-    for scene in scenes:
-        if scene["end"] - scene["start"] < 35:
-            scene["first_index"] = max(0, scene["first_index"] - 1)
-            scene["last_index"] = min(len(beats) - 1, scene["last_index"] + 1)
-
-    def merge(items: list[dict]) -> list[dict]:
-        merged = []
-        for scene in sorted(items, key=lambda item: item["first_index"]):
-            if merged and scene["first_index"] <= merged[-1]["last_index"] + 1:
-                merged[-1]["last_index"] = max(merged[-1]["last_index"], scene["last_index"])
-                merged[-1]["purpose"] = f"{merged[-1]['purpose']}; {scene['purpose']}"[:240]
-                merged[-1]["required"] = merged[-1].get("required", False) or scene.get("required", False)
-            else:
-                merged.append(dict(scene))
-        for scene in merged:
-            scene.update(start_beat_id=beats[scene["first_index"]]["id"], end_beat_id=beats[scene["last_index"]]["id"],
-                         start=float(beats[scene["first_index"]]["start"]), end=float(beats[scene["last_index"]]["end"]))
-        return merged
-
-    scenes = merge(scenes)
-    while sum(scene["end"] - scene["start"] for scene in scenes) < target:
-        covered = {index for scene in scenes for index in range(scene["first_index"], scene["last_index"] + 1)}
-        candidates = sorted(
-            (index for index in range(len(beats)) if index not in covered),
-            key=lambda index: (beats[index].get("importance", 1), beats[index].get("keep", False),
-                               beats[index].get("type") in {"COMBAT", "REACTION", "RESULT"}),
-            reverse=True,
-        )
-        if not candidates:
-            break
-        index = candidates[0]
-        scenes.append({"first_index": max(0, index - 1), "last_index": min(len(beats) - 1, index + 1),
-                       "purpose": beats[index].get("reason", "high-value story moment"), "required": False})
-        scenes = merge(scenes)
-
     if scenes:
         last_gameplay = max((index for index, beat in enumerate(beats) if beat.get("phase") == "IN_GAME"), default=None)
         final = scenes[-1]
         if last_gameplay is not None and final["last_index"] < last_gameplay:
-            extended_duration = float(beats[last_gameplay]["end"]) - final["start"]
-            if extended_duration <= 120:
-                final.update(end_beat_id=beats[last_gameplay]["id"], last_index=last_gameplay, end=float(beats[last_gameplay]["end"]))
-            else:
-                first = last_gameplay
-                while first > final["last_index"] + 1 and beats[last_gameplay]["end"] - beats[first - 1]["start"] <= 90:
-                    first -= 1
-                scenes.append({"start_beat_id": beats[first]["id"], "end_beat_id": beats[last_gameplay]["id"],
-                               "first_index": first, "last_index": last_gameplay, "start": float(beats[first]["start"]),
-                               "end": float(beats[last_gameplay]["end"]), "purpose": "actual final fight, result, and reaction",
-                               "required": True})
+            first = last_gameplay
+            while first > final["last_index"] + 1 and beats[last_gameplay]["end"] - beats[first - 1]["start"] <= 90:
+                first -= 1
+            scenes.append({"start_beat_id": beats[first]["id"], "end_beat_id": beats[last_gameplay]["id"],
+                           "first_index": first, "last_index": last_gameplay, "start": float(beats[first]["start"]),
+                           "end": float(beats[last_gameplay]["end"]), "purpose": "actual final fight, result, and reaction",
+                           "required": True})
         scenes[0]["required"] = True
         scenes[-1]["required"] = True
-    scenes = merge(scenes)
-    while sum(scene["end"] - scene["start"] for scene in scenes) > maximum:
-        total = sum(scene["end"] - scene["start"] for scene in scenes)
-        removable = [scene for scene in scenes[1:-1] if not scene.get("required")
-                     and total - (scene["end"] - scene["start"]) >= 520]
-        if not removable:
-            break
-        remove = min(removable, key=lambda scene: max(beats[index].get("importance", 1)
-                                                       for index in range(scene["first_index"], scene["last_index"] + 1)))
-        scenes.remove(remove)
+    if not scenes or any(right["start"] < left["end"] for left, right in zip(scenes, scenes[1:])):
+        raise ValueError("Long scene selection needs review: empty or overlapping story units")
     return scenes
 
 
@@ -633,9 +577,9 @@ def _refine_long_scenes(vod_dir: Path, ai: AI, game: dict, beats: list[dict], sc
             start, end = scene["start"], scene["end"]
         start, end = _avoid_split_word(start, end, nearby_words, region)
         cut = {"source_start": game["gameplay_start"] + start, "source_end": game["gameplay_start"] + end,
-               "relative_start": start, "relative_end": end, "start_beat_id": scene["start_beat_id"],
-               "end_beat_id": scene["end_beat_id"], "purpose": scene["purpose"],
-               "raw_start": scene["start"], "raw_end": scene["end"]}
+                "relative_start": start, "relative_end": end, "start_beat_id": scene["start_beat_id"],
+                "end_beat_id": scene["end_beat_id"], "purpose": scene["purpose"],
+                "raw_start": scene["start"], "raw_end": scene["end"], "required": scene.get("required", False)}
         cuts.append(cut)
         if is_cold and isinstance(answer, dict):
             hook_start, hook_end = answer.get("cold_open_start"), answer.get("cold_open_end")
@@ -683,12 +627,28 @@ def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
     segments, cold_open = _refine_long_scenes(
         vod_dir, ai, game, beats, scenes, cache_key, model_plan.get("cold_open_beat_id"), force
     )
-    selected = [beat["id"] for scene in scenes for beat in beats[scene["first_index"] : scene["last_index"] + 1]]
     gameplay_duration = sum(segment["source_end"] - segment["source_start"] for segment in segments)
     title_duration, end_card_duration = 5.0, 12.0
     duration = gameplay_duration + cold_open["source_end"] - cold_open["source_start"] + title_duration + end_card_duration
+    while duration > 720:
+        removable = [
+            (max(beat.get("importance", 1) for beat in beats if segment["start_beat_id"] <= beat["id"] <= segment["end_beat_id"]), index)
+            for index, segment in enumerate(segments[:-1])
+            if not segment["required"] and not (segment["source_start"] <= cold_open["source_start"] < segment["source_end"])
+            and duration - (segment["source_end"] - segment["source_start"]) >= 540
+        ]
+        if not removable:
+            break
+        _, index = min(removable)
+        removed = segments.pop(index)
+        gameplay_duration -= removed["source_end"] - removed["source_start"]
+        duration -= removed["source_end"] - removed["source_start"]
     if not 540 <= duration <= 720:
         raise ValueError(f"Long edit duration {duration:.1f}s is outside 9-12 minutes")
+    selected = ([beat["id"] for segment in segments for beat in beats
+                 if segment["start_beat_id"] <= beat["id"] <= segment["end_beat_id"]]
+                if all("start_beat_id" in segment and "end_beat_id" in segment for segment in segments)
+                else [beat["id"] for scene in scenes for beat in beats[scene["first_index"] : scene["last_index"] + 1]])
     plan = {
         **cache_key, "long_version": 14,
         "story": model_plan.get("story", ""),

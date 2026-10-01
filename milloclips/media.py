@@ -6,11 +6,12 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import imageio_ffmpeg
 from yt_dlp import YoutubeDL
 
-from .io import write_json
+from .io import read_json, write_json
 
 
 def ffmpeg() -> str:
@@ -54,6 +55,15 @@ def media_info(path: Path) -> dict:
     }
 
 
+def _kick_recording_url(source: str) -> str | None:
+    if not source.startswith("https://kick.com/"):
+        return None
+    with urlopen(Request(source, headers={"User-Agent": "milloclips/0.1"}), timeout=20) as response:
+        page = response.read().decode("utf-8")
+    match = re.search(r'(?:\\")?recording_url(?:\\")?:(?:\\")?(https:[^"\\]+)', page)
+    return match.group(1).replace("\\/", "/") if match else None
+
+
 def ingest(source: str, root: Path) -> Path:
     vod_id = hashlib.sha256(source.encode()).hexdigest()[:12]
     vod_dir = root / vod_id
@@ -65,6 +75,7 @@ def ingest(source: str, root: Path) -> Path:
         metadata = {"kind": "local", "input": str(source_path)}
     else:
         template = str(vod_dir / "source.%(ext)s")
+        download_source = _kick_recording_url(source) or source
         with YoutubeDL(
             {
                 "format": "bestvideo+bestaudio/best",
@@ -74,7 +85,7 @@ def ingest(source: str, root: Path) -> Path:
                 "quiet": False,
             }
         ) as downloader:
-            info = downloader.extract_info(source, download=True)
+            info = downloader.extract_info(download_source, download=True)
             metadata = {
                 "kind": "kick",
                 "input": source,
@@ -105,27 +116,66 @@ def sample_frames(
     start: float = 0,
     end: float | None = None,
     width: int = 960,
+    force: bool = False,
 ) -> list[dict]:
     output.mkdir(parents=True, exist_ok=True)
-    for old in output.glob("*.jpg"):
-        old.unlink()
-    arguments = ["-ss", str(start), "-i", str(source)]
-    if end is not None:
-        arguments += ["-t", str(max(0, end - start))]
-    arguments += [
-        "-vf",
-        f"fps=1/{interval},scale={width}:-2",
-        "-q:v",
-        "4",
-        "-start_number",
-        "0",
-        str(output / "frame_%06d.jpg"),
-    ]
-    run_ffmpeg(arguments)
+    existing = sorted(output.glob("frame_*.jpg"))
+    if force or end is None:
+        for old in existing:
+            old.unlink()
+        existing = []
+    resume_at = start + len(existing) * interval
+    if end is not None and resume_at < end:
+        arguments = ["-ss", str(resume_at), "-i", str(source), "-t", str(max(0, end - resume_at))]
+        arguments += [
+            "-vf",
+            f"fps=1/{interval},scale={width}:-2",
+            "-q:v",
+            "4",
+            "-start_number",
+            str(len(existing)),
+            str(output / "frame_%06d.jpg"),
+        ]
+        run_ffmpeg(arguments)
     return [
         {"timestamp": start + index * interval, "path": str(path.resolve())}
         for index, path in enumerate(sorted(output.glob("frame_*.jpg")))
     ]
+
+
+def sample_boundary_frames(source: Path, output: Path, interval: float, *, start: float, end: float, width: int = 960) -> list[dict]:
+    """Cache decoded frame times on the same source-relative clock as input -ss.
+
+    Unlike fps resampling, select preserves the decoded frame's presentation time.
+    FFmpeg normalizes input start_time (including MPEG-TS offsets) before filtering.
+    """
+    if not all(math.isfinite(value) for value in (start, end, interval)) or not 0 <= start < end or interval <= 0:
+        raise ValueError("Boundary sampling requires finite positive bounds and interval")
+    stat = source.stat()
+    key = {"version": 1, "source": str(source.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+           "start": start, "end": end, "interval": interval, "width": width}
+    manifest = output / "frames.json"
+    if manifest.exists():
+        cached = read_json(manifest)
+        if cached.get("sampling") == key and all(Path(frame["path"]).exists() for frame in cached.get("frames", [])):
+            return cached["frames"]
+    output.mkdir(parents=True, exist_ok=True)
+    for old in output.glob("frame_*.jpg"):
+        old.unlink()
+    result = run_ffmpeg([
+        "-ss", str(start), "-i", str(source), "-t", str(end - start),
+        "-vf", f"trim=duration={end - start},select='isnan(prev_selected_t)+gte(t-prev_selected_t,{interval})',scale={width}:-2,showinfo",
+        "-fps_mode", "vfr", "-q:v", "4", "-start_number", "0", str(output / "frame_%06d.jpg"),
+    ], capture=True)
+    times = [float(value) for value in re.findall(r"\bpts_time:([-+\d.eE]+)", result.stderr)]
+    paths = sorted(output.glob("frame_*.jpg"))
+    if not paths or len(paths) != len(times):
+        raise ValueError("Decoded boundary frame timestamps do not match extracted images")
+    frames = [{"timestamp": start + time, "path": str(path.resolve())} for time, path in zip(times, paths)]
+    if any(not start - 0.001 <= frame["timestamp"] < end + 0.001 for frame in frames):
+        raise ValueError("Decoded boundary frame lies outside its source window")
+    write_json(manifest, {"sampling": key, "frames": frames})
+    return frames
 
 
 def extract_audio(source: Path, output: Path, start: float, end: float) -> None:
