@@ -17,7 +17,7 @@ from yt_dlp import YoutubeDL
 from .ai import AI
 from .fonts import ASS_NAME, FILE
 from .io import read_json, write_json
-from .media import TITLE_DISSOLVE, duration, extract_audio, ffmpeg, intro_duration, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_boundary_frames, sample_frames, title_start
+from .media import TITLE_DISSOLVE, TITLE_DURATION, TITLE_MUSIC_LEAD, TITLE_MUSIC_START, duration, extract_audio, ffmpeg, intro_duration, media_info, render_long_video, render_segments, render_vertical, run_ffmpeg, sample_boundary_frames, sample_frames, title_start
 
 
 ACCENT = (234, 255, 32)
@@ -835,7 +835,7 @@ def _extend_intro_body(vod_dir: Path, ai: AI, plan: dict, beats: list[dict], int
     original = proposals.get("budget_revision", {}).get("plan", proposals["plan"])
     original_scenes = _long_scene_ranges(beats, original)
     by_range = {(scene["start_beat_id"], scene["end_beat_id"]): scene for scene in original_scenes}
-    overhead = intro_duration(intro) + plan["title_duration"] + plan["end_card_duration"] - TITLE_DISSOLVE
+    overhead = intro_duration(intro) + plan["title_duration"] + plan["end_card_duration"] - 3 * TITLE_DISSOLVE
     first_action = next(part["source_start"] for part in story_segments if part.get("event_kind") == "combat" and part.get("relative_start", 0) >= 0)
     main_segments = [part for part in story_segments if part["source_start"] >= first_action] if intro["kind"] == "setup" else story_segments
     feedback = {"duration": current_duration, "current_main_duration": sum(part["source_end"] - part["source_start"] for part in main_segments),
@@ -870,7 +870,7 @@ def _apply_long_intro(vod_dir: Path, ai: AI, plan: dict, beats: list[dict], forc
     first_action = next((part["source_start"] for part in story_segments
                          if part.get("event_kind") == "combat" and part.get("relative_start", 0) >= 0), None)
     after_setup = [part for part in story_segments if first_action is not None and part["source_start"] >= first_action]
-    overhead = plan["title_duration"] + plan["end_card_duration"] - TITLE_DISSOLVE
+    overhead = plan["title_duration"] + plan["end_card_duration"] - 3 * TITLE_DISSOLVE
     setup_base = overhead + sum(part["source_end"] - part["source_start"] for part in after_setup)
     cold_base = overhead + sum(part["source_end"] - part["source_start"] for part in story_segments)
     limits = {"setup": [8, min(40, 720 - setup_base)],
@@ -983,13 +983,13 @@ def plan_long(vod_dir: Path, ai: AI, force: bool = False) -> dict:
         cached_proposal = {**cache_key, "proposal_version": 2, "plan": model_plan}
         write_json(proposal_path, cached_proposal)
     scenes = _long_scene_ranges(beats, model_plan)
-    title_duration, end_card_duration = 5.0, 12.0
+    title_duration, end_card_duration = TITLE_DURATION, 12.0
     for attempt in range(2):
         segments, cold_open = _refine_long_scenes(
             vod_dir, ai, game, beats, scenes, cache_key, model_plan.get("cold_open_beat_id"), force and attempt == 0
         )
         gameplay_duration = sum(segment["source_end"] - segment["source_start"] for segment in segments)
-        overhead = cold_open["source_end"] - cold_open["source_start"] + title_duration + end_card_duration
+        overhead = cold_open["source_end"] - cold_open["source_start"] + title_duration + end_card_duration - 3 * TITLE_DISSOLVE
         duration = gameplay_duration + overhead
         if 540 <= duration <= 720 or attempt == 1:
             break
@@ -1073,33 +1073,33 @@ def _audio_spectrum(path: Path, start: float, duration_seconds: float = 5, fps: 
         chunk = samples[index * frame_size:(index + 1) * frame_size]
         chunk = (*chunk, *((0,) * (frame_size - len(chunk))))
         spectra.append([
-            math.log1p(math.hypot(sum(sample * cosine for sample, (cosine, _) in zip(chunk, wave_basis)),
-                                  sum(sample * sine for sample, (_, sine) in zip(chunk, wave_basis))))
+            math.hypot(sum(sample * cosine for sample, (cosine, _) in zip(chunk, wave_basis)),
+                       sum(sample * sine for sample, (_, sine) in zip(chunk, wave_basis)))
             for wave_basis in basis
         ])
     bounds = []
     for band in zip(*spectra):
         ordered = sorted(band)
         bounds.append((ordered[len(ordered) // 10], ordered[round(len(ordered) * 0.95) - 1]))
-    result, previous = [], [0.0] * len(bounds)
+    result = []
     for spectrum in spectra:
-        for index, (value, (floor, peak)) in enumerate(zip(spectrum, bounds)):
-            normalized = min(1, max(0, (value - floor) / max(0.001, peak - floor))) ** 1.1
-            blend = 0.65 if normalized > previous[index] else 0.3
-            previous[index] += (normalized - previous[index]) * blend
+        # Spatial smoothing only: temporal averaging would delay the visible beat.
+        levels = [min(1, max(0, (value - floor) / max(0.001, peak - floor))) ** 1.4
+                  for value, (floor, peak) in zip(spectrum, bounds)]
         result.append([
-            (previous[max(0, index - 1)] + 2 * value + previous[min(len(previous) - 1, index + 1)]) / 4
-            for index, value in enumerate(previous)
+            (levels[max(0, index - 1)] + 2 * value + levels[min(len(levels) - 1, index + 1)]) / 4
+            for index, value in enumerate(levels)
         ])
     return result
 
 
-def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = None) -> Image.Image:
+def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = None,
+                 duration_seconds: float = TITLE_DURATION) -> Image.Image:
     background = "#060b18"
     frame = Image.new("RGBA", (1280, 720), background)
-    entrance = _ease(time)
+    entrance = _ease(min(time, duration_seconds - time))
     breath = 0.5 - 0.5 * math.cos(2 * math.pi * max(0, time - 1) / 2.1)
-    scale = 0.98 + 0.02 * entrance + 0.015 * breath
+    scale = 0.94 + 0.06 * entrance + 0.08 * breath
     supersample = 4
     icon = ImageOps.contain(logo, (280 * supersample, 280 * supersample), Image.Resampling.LANCZOS)
     icon = icon.resize((round(icon.width * scale), round(icon.height * scale)), Image.Resampling.LANCZOS)
@@ -1114,7 +1114,7 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
     frame = Image.alpha_composite(frame, glow.filter(ImageFilter.GaussianBlur(round(110 + 8 * breath))))
     spectrum = spectrum or [0.0] * 48
     energy = sum(spectrum) / len(spectrum)
-    ring_scale, ring_size = 4, 520
+    ring_scale, ring_size = 4, 680
     ring_points = []
     for index in range(192):
         angle = math.pi / 2 + 2 * math.pi * index / 192
@@ -1122,38 +1122,34 @@ def _title_frame(logo: Image.Image, time: float, spectrum: list[float] | None = 
         band = min(46, int(band_position))
         fraction = band_position - band
         level = spectrum[band] * (1 - fraction) + spectrum[band + 1] * fraction
-        vibration = 32 * level ** 0.8 * entrance
-        radius = 200 + 3 * breath + vibration
+        vibration = (90 * level + 18 * energy) * entrance
+        radius = 200 + vibration
         ring_points.append(((ring_size / 2 + math.cos(angle) * radius) * ring_scale,
                             (ring_size / 2 + math.sin(angle) * radius) * ring_scale))
     ring_points.append(ring_points[0])
     ring = Image.new("RGBA", (ring_size * ring_scale, ring_size * ring_scale))
     ring_glow = Image.new("RGBA", ring.size)
-    ImageDraw.Draw(ring_glow).line(ring_points, fill=(*ACCENT, round((25 + 20 * energy) * entrance)),
-                                   width=8 * ring_scale, joint="curve")
+    ImageDraw.Draw(ring_glow).line(ring_points, fill=(*ACCENT, round((45 + 90 * energy) * entrance)),
+                                   width=12 * ring_scale, joint="curve")
     ring = Image.alpha_composite(ring, ring_glow.filter(ImageFilter.GaussianBlur(3 * ring_scale)))
-    ImageDraw.Draw(ring).line(ring_points, fill=(*ACCENT, round((135 + 40 * energy) * entrance)),
-                              width=3 * ring_scale, joint="curve")
+    ImageDraw.Draw(ring).line(ring_points, fill=(*ACCENT, round((180 + 75 * energy) * entrance)),
+                              width=round((3 + 2 * energy) * ring_scale), joint="curve")
     ring = ring.resize((ring_size, ring_size), Image.Resampling.LANCZOS)
     frame.alpha_composite(ring, ((1280 - ring_size) // 2, (720 - ring_size) // 2))
     frame.alpha_composite(icon_layer, ((1280 - 340) // 2, (720 - 340) // 2))
-    if time > 4.70:
-        fade = round(255 * (1 - _ease((time - 4.70) / 0.30)))
-        frame.putalpha(fade)
-        frame = Image.alpha_composite(Image.new("RGBA", frame.size, background), frame)
     return frame.convert("RGB")
 
 
-def _render_title_card(path: Path, icon: Path, music: Path) -> None:
+def _render_title_card(path: Path, icon: Path, music: Path, duration_seconds: float = TITLE_DURATION) -> None:
     with Image.open(icon) as source, tempfile.TemporaryDirectory() as temporary:
         logo = source.convert("RGBA")
         frames = Path(temporary)
-        spectra = _audio_spectrum(music, 43.5)
-        for index in range(150):
-            _title_frame(logo, index / 30, spectra[index]).save(frames / f"frame-{index + 1:03d}.png")
+        spectra = _audio_spectrum(music, TITLE_MUSIC_START + TITLE_MUSIC_LEAD, duration_seconds)
+        for index, spectrum in enumerate(spectra):
+            _title_frame(logo, index / 30, spectrum, duration_seconds).save(frames / f"frame-{index + 1:03d}.png")
         run_ffmpeg([
             "-framerate", "30", "-i", str(frames / "frame-%03d.png"),
-            "-f", "lavfi", "-t", "5", "-i", "anullsrc=r=48000:cl=stereo",
+            "-f", "lavfi", "-t", str(duration_seconds), "-i", "anullsrc=r=48000:cl=stereo",
             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(path),
         ])
@@ -1258,7 +1254,7 @@ def _render_end_card(path: Path, trailer: Path, kick: Path, x: Path) -> None:
         ])
 
 
-def _long_cards() -> tuple[Path, Path, Path]:
+def _long_cards(title_duration: float = TITLE_DURATION) -> tuple[Path, Path, Path]:
     shared = Path("assets") / "long"
     icon = _download_asset(shared / "elmiillor-icon.png", "https://elmiillor.com/favicon.png")
     kick = _download_asset(shared / "kick-icon.ico", "https://kick.com/favicon.ico")
@@ -1266,15 +1262,16 @@ def _long_cards() -> tuple[Path, Path, Path]:
     music = _dream_eater(shared)
     source = shared / "dream-eater-source.json"
     source_metadata = {"name": "Dream Eater", "artist": "Hyleo", "collection": "Sessions: Star Guardian Taliyah",
-                       "source": "https://www.youtube.com/watch?v=FDMYwUn5CIg", "title_clip_start": 42.5,
+                       "source": "https://www.youtube.com/watch?v=FDMYwUn5CIg", "title_clip_start": TITLE_MUSIC_START,
                        "end_clip_start": 42, "end_card_sync": 43}
     if not source.exists() or read_json(source) != source_metadata:
         write_json(source, source_metadata)
     title_path, end_path = shared / "title-card.mp4", shared / "end-card.mp4"
     title_metadata = shared / "title-card.json"
-    title_key = {"version": 2, "icon": _file_fingerprint(icon), "music": _source_identity(music), "duration": 5}
-    if not title_path.exists() or not title_metadata.exists() or read_json(title_metadata) != title_key or abs(duration(title_path) - 5) > 0.1:
-        _render_title_card(title_path, icon, music)
+    title_key = {"version": 4, "icon": _file_fingerprint(icon), "music": _source_identity(music), "duration": title_duration,
+                 "spectrum_start": TITLE_MUSIC_START + TITLE_MUSIC_LEAD}
+    if not title_path.exists() or not title_metadata.exists() or read_json(title_metadata) != title_key or abs(duration(title_path) - title_duration) > 0.1:
+        _render_title_card(title_path, icon, music, title_duration)
         write_json(title_metadata, title_key)
     if not end_path.exists() or abs(duration(end_path) - 12) > 0.1:
         _render_end_card(end_path, _trailer(shared), kick, x)
@@ -1287,16 +1284,17 @@ def render_long(vod_dir: Path) -> Path:
     output = vod_dir / "renders" / "long-rough.mp4"
     if plan.get("long_version") != 16 or plan.get("intro_policy_version") != 1:
         raise SystemExit("long-plan.json predates setup/successful-play intros; run plan-long first")
-    title, end, music = _long_cards()
+    plan["title_duration"] = TITLE_DURATION
+    title, end, music = _long_cards(plan["title_duration"])
     intro_seconds = intro_duration(plan["cold_open"])
     plan["title_transition"] = TITLE_DISSOLVE
-    plan["duration"] = (title_start(intro_seconds, plan["title_duration"]) + plan["title_duration"]
+    plan["duration"] = (title_start(intro_seconds, plan["title_duration"]) + plan["title_duration"] - 2 * TITLE_DISSOLVE
                         + plan["end_card_duration"] + sum(part["source_end"] - part["source_start"] for part in plan["segments"]))
     write_json(vod_dir / "long-plan.json", plan)
     render_long_video(Path(manifest["source"]), plan["segments"], plan["cold_open"], title, end, output,
                        title_duration=plan["title_duration"], end_duration=plan["end_card_duration"],
                        title_transition=plan["title_transition"],
-                       title_music=music, title_music_start=42.5, end_music=music, end_music_start=42)
+                       title_music=music, title_music_start=TITLE_MUSIC_START, end_music=music, end_music_start=42)
     info = media_info(output)
     if abs(info["duration"] - plan["duration"]) > 0.5 or not info["audio"] or (info["width"], info["height"]) != (1280, 720):
         raise ValueError("Long render does not match its precise edit plan")
@@ -1315,13 +1313,17 @@ def _long_transitions(plan: dict) -> list[dict]:
     cursor = title_start(intro_duration(plan["cold_open"]), plan["title_duration"],
                          plan.get("title_transition", TITLE_DISSOLVE))
     transitions.append({"output_time": cursor, "label": "intro -> icon card", "dissolve_seconds": plan.get("title_transition", TITLE_DISSOLVE)})
-    cursor += plan["title_duration"]
-    transitions.append({"output_time": cursor, "label": "channel title -> premise"})
+    cursor += plan["title_duration"] - plan.get("title_transition", TITLE_DISSOLVE)
+    transitions.append({"output_time": cursor, "label": "channel title -> premise",
+                        "dissolve_seconds": plan.get("title_transition", TITLE_DISSOLVE)})
     for index, segment in enumerate(plan["segments"]):
         cursor += segment["source_end"] - segment["source_start"]
         label = "result -> end card" if index == len(plan["segments"]) - 1 else f"scene {index + 1} -> scene {index + 2}"
+        if index == len(plan["segments"]) - 1:
+            cursor -= plan.get("title_transition", TITLE_DISSOLVE)
         next_segment = plan["segments"][index + 1] if index + 1 < len(plan["segments"]) else None
         transitions.append({"output_time": cursor, "label": label,
+                            "dissolve_seconds": plan.get("title_transition", TITLE_DISSOLVE) if next_segment is None else 0,
                             "outgoing_source_end": segment["source_end"], "exit_reason": segment.get("end_reason", ""),
                             "incoming_source_start": next_segment["source_start"] if next_segment else None,
                             "entry_reason": next_segment.get("start_reason", "") if next_segment else "Reusable end card",

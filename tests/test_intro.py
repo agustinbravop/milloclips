@@ -90,9 +90,9 @@ class IntroTests(unittest.TestCase):
                 self.assertEqual(updated["segments"], [plan["segments"][-1]])
                 self.assertEqual(updated["story_segments"], plan["segments"])
                 self.assertEqual(intro_duration(updated["intro"]), 20)
-                self.assertEqual(updated["duration"], 576.5)
+                self.assertEqual(updated["duration"], 575.5)
                 times = [join["output_time"] for join in _long_transitions(updated)]
-                self.assertEqual(times, [10, 19.5, 24.5, 564.5])
+                self.assertEqual(times, [10, 19.5, 24.0, 563.5])
                 again = _apply_long_intro(root, ai, updated, beats)
                 self.assertEqual(again, updated)
                 self.assertEqual(propose.call_count, 2)

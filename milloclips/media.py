@@ -247,6 +247,9 @@ def render_segments(source: Path, segments: list[dict], output: Path) -> None:
 
 
 TITLE_DISSOLVE = 0.5
+TITLE_DURATION = 7.0
+TITLE_MUSIC_START = 42.5
+TITLE_MUSIC_LEAD = 1.0
 
 
 def intro_duration(intro: dict) -> float:
@@ -259,7 +262,7 @@ def title_start(intro_duration: float, title_duration: float, dissolve: float = 
     return intro_duration - dissolve
 
 
-def title_music_window(cold_open_duration: float, title_duration: float, *, lead: float = 1.0, tail: float = 1.0,
+def title_music_window(cold_open_duration: float, title_duration: float, *, lead: float = TITLE_MUSIC_LEAD, tail: float = 1.0,
                        dissolve: float = TITLE_DISSOLVE) -> dict:
     """Place a music clip so it fades in before the title card and out after it."""
     card_start = title_start(cold_open_duration, title_duration, dissolve)
@@ -297,7 +300,7 @@ def render_long_video(
     title_music_volume: float = 0.07734375,
     end_music: Path | None = None,
     end_music_start: float = 0.0,
-    end_music_volume: float = 0.55,
+    end_music_volume: float = 0.103125,
 ) -> None:
     if not segments or not 0 <= cold_open["source_start"] < cold_open["source_end"]:
         raise ValueError("Long video requires gameplay scenes and a valid cold open")
@@ -308,6 +311,14 @@ def render_long_video(
     source_parts = [*intro_parts, *segments]
     intro_seconds = intro_duration(cold_open)
     card_start = title_start(intro_seconds, title_duration, title_transition)
+    if title_transition and (2 * title_transition >= title_duration or
+                             segments[0]["source_end"] - segments[0]["source_start"] <= title_transition):
+        raise ValueError("Title dissolves must fit inside the card and first gameplay scene")
+    if title_transition and (end_duration <= title_transition or
+                             segments[-1]["source_end"] - segments[-1]["source_start"] <= title_transition):
+        raise ValueError("End dissolve must fit inside the end card and final gameplay scene")
+    end_start = (card_start + title_duration - 2 * title_transition
+                 + sum(segment["source_end"] - segment["source_start"] for segment in segments))
     if any(right["source_start"] < left["source_end"] for left, right in zip(segments, segments[1:])):
         raise ValueError("Long source segments must be chronological and non-overlapping")
     seeks = [_segment_input(source, part) for part in source_parts]
@@ -321,9 +332,9 @@ def render_long_video(
     end_input = title_input + 1
     chains.extend((
         f"[{title_input}:v]trim=duration={title_duration},setpts=PTS-STARTPTS,setsar=1,fps=30,settb=AVTB[titlev]",
-        f"[{title_input}:a]atrim=duration={title_duration - title_transition},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[titlea]",
-        f"[{end_input}:v]trim=duration={end_duration},setpts=PTS-STARTPTS,fps=30[endv]",
-        f"[{end_input}:a]atrim=duration={end_duration},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[enda]",
+        f"[{title_input}:a]atrim=duration={title_duration - 2 * title_transition},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[titlea]",
+        f"[{end_input}:v]trim=duration={end_duration},setpts=PTS-STARTPTS,setsar=1,fps=30,settb=AVTB[endv]",
+        f"[{end_input}:a]atrim=duration={end_duration - title_transition},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[enda]",
     ))
     intro_v, intro_a = "v0", "a0"
     if len(intro_parts) > 1:
@@ -334,13 +345,26 @@ def render_long_video(
     if title_transition:
         chains.extend((f"[{intro_v}][titlev]xfade=transition=fade:duration={title_transition}:offset={card_start}[introv]",
                        f"[{intro_a}][titlea]concat=n=2:v=0:a=1[introa]"))
-        ordered = ["[introv][introa]"]
+        first = len(intro_parts)
+        chains.extend((f"[introv][v{first}]xfade=transition=fade:duration={title_transition}:"
+                       f"offset={card_start + title_duration - title_transition}[openingv]",
+                       f"[introa][a{first}]concat=n=2:v=0:a=1[openinga]"))
+        ordered = ["[openingv][openinga]"]
     else:
         ordered = [f"[{intro_v}][{intro_a}]", "[titlev][titlea]"]
-    ordered += [*[f"[v{index}][a{index}]" for index in range(len(intro_parts), len(source_parts))], "[endv][enda]"]
+    ordered += [f"[v{index}][a{index}]" for index in range(len(intro_parts) + bool(title_transition), len(source_parts))]
+    if title_transition:
+        chains.extend((f"{''.join(ordered)}concat=n={len(ordered)}:v=1:a=1[bodyv][bodya]",
+                       "[bodyv]fps=30,settb=AVTB[bodyclock]",
+                       f"[bodyclock][endv]xfade=transition=fade:duration={title_transition}:offset={end_start}[rawv]",
+                       "[bodya][enda]concat=n=2:v=0:a=1[rawa]"))
+    else:
+        ordered.append("[endv][enda]")
+        chains.append(f"{''.join(ordered)}concat=n={len(ordered)}:v=1:a=1[rawv][rawa]")
     chains.extend((
-        f"{''.join(ordered)}concat=n={len(ordered)}:v=1:a=1[rawv][rawa]",
-        "[rawv]fps=30[v]",
+        "[rawv]fps=30,geq=lum='16+(lum(X,Y)-16)*(1-pow(1-T,3))':"
+        "cb='128+(cb(X,Y)-128)*(1-pow(1-T,3))':"
+        "cr='128+(cr(X,Y)-128)*(1-pow(1-T,3))':enable='lt(t,1)'[v]",
         "[rawa]loudnorm,aresample=48000[proga]",
     ))
     music_inputs: list[str] = []
@@ -360,14 +384,13 @@ def render_long_video(
     if end_music is not None:
         lead = 1.0
         length = lead + end_duration
-        delay = (card_start + title_duration
-                 + sum(segment["source_end"] - segment["source_start"] for segment in segments) - lead)
+        delay = end_start - lead
         if delay < 0:
             raise ValueError("End music lead does not fit before the end card")
         music_inputs += ["-ss", str(end_music_start), "-t", str(length), "-i", str(end_music)]
         chains.append(
             f"[{next_input}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume={end_music_volume},"
-            f"afade=t=in:st=0:d={lead}:curve=qua,afade=t=out:st={length - 1}:d=1:curve=qua,"
+            f"afade=t=in:st=0:d={lead + 1.0}:curve=tri,afade=t=out:st={length - 1}:d=1:curve=qua,"
             f"adelay={round(delay * 1000)}:all=1[endmusic]"
         )
         music_labels.append("[endmusic]")

@@ -24,11 +24,12 @@ for the current real run. Optimize for fast learning before production polish.
 - Long-form and Iteration 0 shorts come from the selected game. Whole-VOD short discovery is deferred.
 - Do not build queues, a vector database, or automatic publishing.
 - Upgrade a model only after a reviewed Nano-vs-stronger-model comparison.
+- Run tests without `-v`; capture noisy media logs and show summaries or relevant failures.
 
 ## Verify
 
 ```bash
-uv run python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests
 uv run milloclips --help
 ```
 

@@ -169,7 +169,7 @@ class BoundaryTests(unittest.TestCase):
                     patch.object(ai, "plan_long", side_effect=[initial, revised]):
                 plan = plan_long(root, ai)
                 self.assertEqual([(s["source_start"], s["source_end"]) for s in plan["segments"]], [(0, 400), (1000, 1200)])
-                self.assertEqual(plan["duration"], 627)
+                self.assertEqual(plan["duration"], 627.5)
                 broken = copy.deepcopy(revised)
                 broken["scenes"] = [broken["scenes"][-1]]
                 with patch.object(ai, "plan_long", side_effect=[initial, broken]), self.assertRaisesRegex(ValueError, "required premise"):

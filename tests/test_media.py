@@ -44,7 +44,7 @@ class KickRecordingUrlTests(unittest.TestCase):
 
 
 class BoundaryMediaTests(unittest.TestCase):
-    def test_title_dissolve_blends_frames_and_shortens_timeline_by_half_second(self):
+    def test_card_dissolves_blend_frames_and_account_for_each_overlap(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, card, output = root / "red.mp4", root / "blue.mp4", root / "dissolve.mp4"
@@ -56,14 +56,30 @@ class BoundaryMediaTests(unittest.TestCase):
                 render_long_video(source, [{"source_start": 3, "source_end": 4}],
                                   {"source_start": 0, "source_end": 3, "segments": [
                                       {"source_start": 0, "source_end": 1}, {"source_start": 2, "source_end": 3}]}, card, card, output,
-                                  title_duration=2, end_duration=0.5)
-            self.assertAlmostEqual(media_info(output)["duration"], 5.0, delta=0.1)
+                                   title_duration=2, end_duration=1)
+            self.assertAlmostEqual(media_info(output)["duration"], 4.5, delta=0.1)
+            opening = sample_boundary_frames(output, root / "opening", 0.5, start=0, end=1.1, width=64)
+            reds = [Image.open(frame["path"]).getpixel((32, 18))[0] for frame in opening]
+            self.assertLess(reds[0], 8)  # Allow JPEG/codec rounding near black.
+            self.assertAlmostEqual(reds[1] / reds[2], 0.875, delta=0.04)
             frames = sample_boundary_frames(output, root / "frames", 0.25, start=1.5, end=2.1, width=64)
             colors = [Image.open(frame["path"]).getpixel((32, 18)) for frame in frames]
             self.assertGreater(colors[0][0], 200)
             self.assertGreater(colors[1][0], 60)
             self.assertGreater(colors[1][2], 60)
             self.assertGreater(colors[-1][2], 200)
+            exit_frames = sample_boundary_frames(output, root / "exit", 0.25, start=3, end=3.6, width=64)
+            exit_colors = [Image.open(frame["path"]).getpixel((32, 18)) for frame in exit_frames]
+            self.assertGreater(exit_colors[0][2], 200)
+            self.assertGreater(exit_colors[1][0], 60)
+            self.assertGreater(exit_colors[1][2], 60)
+            self.assertGreater(exit_colors[-1][0], 200)
+            outro = sample_boundary_frames(output, root / "outro", 0.25, start=3.5, end=4.1, width=64)
+            outro_colors = [Image.open(frame["path"]).getpixel((32, 18)) for frame in outro]
+            self.assertGreater(outro_colors[0][0], 200)
+            self.assertGreater(outro_colors[1][0], 60)
+            self.assertGreater(outro_colors[1][2], 60)
+            self.assertGreater(outro_colors[-1][2], 200)
 
     def test_decoded_timestamps_and_rendered_cuts_with_nonzero_source_offset(self):
         with TemporaryDirectory() as temporary:

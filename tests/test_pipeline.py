@@ -140,7 +140,7 @@ class EditingTests(unittest.TestCase):
         plan = {"cold_open": {"source_start": 10, "source_end": 16}, "title_duration": 2.5,
                 "segments": [{"source_start": 20, "source_end": 30}, {"source_start": 40, "source_end": 55}]}
         transitions = _long_transitions(plan)
-        self.assertEqual([item["output_time"] for item in transitions], [5.5, 8.0, 18.0, 33.0])
+        self.assertEqual([item["output_time"] for item in transitions], [5.5, 7.5, 17.5, 32.0])
         self.assertEqual(transitions[-1]["label"], "result -> end card")
 
     def test_shared_artwork_download_uses_browser_user_agent(self) -> None:
@@ -181,10 +181,12 @@ class EditingTests(unittest.TestCase):
                               root / "long.mp4")
         command = ffmpeg.call_args.args[0]
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("[introv][introa][v1][a1][endv][enda]concat=n=3", filters)
+        self.assertIn("[openingv][openinga]concat=n=1:v=1:a=1[bodyv][bodya]", filters)
+        self.assertIn("[bodyclock][endv]xfade=transition=fade:duration=0.5:offset=28.0", filters)
         self.assertIn("xfade=transition=fade:duration=0.5:offset=6.5", filters)
-        self.assertIn("[2:a]atrim=duration=2.0", filters)
-        self.assertIn("[3:a]atrim=duration=8.0", filters)
+        self.assertIn("[introv][v1]xfade=transition=fade:duration=0.5:offset=8.5", filters)
+        self.assertIn("[2:a]atrim=duration=1.5", filters)
+        self.assertIn("[3:a]atrim=duration=7.5", filters)
         self.assertIn("[1:v]trim=start=5:end=25,setpts", filters)
         self.assertIn("[1:a]atrim=start=5:end=25,asetpts", filters)
         self.assertNotIn("zoompan=", filters)
@@ -208,6 +210,8 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42.5", "-t", "7.0", "-i"])
         self.assertIn("afade=t=in:st=0:d=2.0:curve=qua,afade=t=out:st=6.0:d=1.0:curve=qua,adelay=4500:all=1[musica]", filters)
         self.assertIn("volume=0.07734375", filters)
+        self.assertIn("[rawv]fps=30,geq=lum='16+(lum(X,Y)-16)*(1-pow(1-T,3))'", filters)
+        self.assertIn("enable='lt(t,1)'[v]", filters)
         self.assertIn("amix=inputs=2:duration=first:dropout_transition=0:normalize=0", filters)
         # loudnorm has to run before the mix or its dynamic gain reshapes both fades.
         self.assertLess(filters.index("loudnorm"), filters.index("amix"))
@@ -223,9 +227,11 @@ class EditingTests(unittest.TestCase):
         command = ffmpeg.call_args.args[0]
         filters = command[command.index("-filter_complex") + 1]
         self.assertEqual(command[command.index(music) - 5:command.index(music)], ["-ss", "42", "-t", "13.0", "-i"])
-        self.assertIn("[3:a]atrim=duration=12.0", filters)
+        self.assertIn("[3:a]atrim=duration=11.5", filters)
         self.assertIn("volume=0[enda]", filters)
-        self.assertIn("afade=t=in:st=0:d=1.0:curve=qua,afade=t=out:st=12.0:d=1:curve=qua,adelay=29500:all=1[endmusic]", filters)
+        self.assertIn("volume=0.103125", filters)
+        # One-second lead plus two-second fade peaks one second after card appearance.
+        self.assertIn("afade=t=in:st=0:d=2.0:curve=tri,afade=t=out:st=12.0:d=1:curve=qua,adelay=28500:all=1[endmusic]", filters)
 
     def test_legacy_matching_transcript_is_reused(self) -> None:
         class FakeAI:
