@@ -11,6 +11,7 @@ from .fixture import create_fixture
 from .io import read_json, record_run, write_json
 from .kick import print_vods, recent_vods
 from .media import ingest
+from .publish import publish
 from .reports import scan_report, shorts_report
 from .scan import scan
 from .thumbnails import prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
@@ -85,6 +86,14 @@ def parser() -> argparse.ArgumentParser:
     thumbnails.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
     thumbnails.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
 
+    publish_parser = commands.add_parser("publish", help="Publish a rendered VOD into the static website catalog")
+    publish_parser.add_argument("vod_dir", type=Path)
+    publish_parser.add_argument("--site", type=Path, default=Path("website"))
+    publish_parser.add_argument("--approve", action="store_true", help="Required; confirms this render is ready to go public")
+    publish_parser.add_argument("--youtube", help="Publish the long form as a YouTube video id instead of a local file")
+    publish_parser.add_argument("--slug", help="Asset basename; defaults to a slug of the generated thumbnail title")
+    publish_parser.add_argument("--vod-id", help="Catalog VOD id when the manifest cannot be matched by its Kick URL")
+
     fixture = commands.add_parser("fixture", help="Run a synthetic Iteration 0 pipeline without an API key")
     fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"))
     fixture.add_argument("--seconds", type=int, default=1200)
@@ -103,6 +112,10 @@ def main() -> None:
         return
     if arguments.command == "ingest":
         print(ingest(arguments.source, arguments.root))
+        return
+    if arguments.command == "publish":
+        print(publish(arguments.vod_dir, arguments.site, arguments.approve,
+                      arguments.youtube, arguments.slug, arguments.vod_id))
         return
     if arguments.command == "auto":
         source_path = Path(arguments.source).expanduser()

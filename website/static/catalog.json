@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-30",
+  "generatedAt": "2026-10-01",
   "channel": {
     "name": "ElmilloR",
     "kickUrl": "https://kick.com/elmiillor"
@@ -81,7 +81,18 @@
       "duration": 14368,
       "kickUrl": "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443",
       "shorts": [],
-      "pendingReason": "not_ingested"
+      "long": {
+        "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-long",
+        "title": "UDYR CON HOTDOGS FUNCIONA",
+        "poster": "/images/udyr-con-hotdogs-funciona-thumbnail.png",
+        "duration": 645.9,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "file",
+          "src": "/media/udyr-con-hotdogs-funciona-long.mp4"
+        }
+      }
     },
     {
       "id": "78938968-f0ce-4bdb-b82e-6fd355cf6297",

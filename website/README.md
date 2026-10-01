@@ -52,6 +52,17 @@ the Spanish wording, so the data never repeats the same sentence per stream.
 `video.provider` is `file` (public URL to an MP4) or `youtube` (YouTube video
 id). Switching a published video to YouTube is a one-field edit.
 
+## Publishing
+
+The gallery is written by `uv run milloclips publish <vod_dir> --approve` from
+the repository root; there is no admin panel or upload flow. It reads the VOD's
+existing artifacts, matches the catalog entry by the Kick URL in `manifest.json`
+(override with `--vod-id`), upserts the `long`/`shorts` records, and stages
+assets under `static/`. Media is hardlinked, not copied. The clip title comes
+from the thumbnail process, the poster from `renders/thumbnail.png`. Pass
+`--youtube <video_id>` to record the long form as `provider: youtube` once it is
+uploaded, leaving every other field unchanged.
+
 ## What is real and what is provisional
 
 - Streams, titles, dates, durations, Kick URLs: real Kick data.
@@ -69,5 +80,5 @@ id). Switching a published video to YouTube is a one-field edit.
 
 ## Not built yet
 
-No admin panel, database, or upload flow. When the admin arrives it writes the
-same catalog records, so the rundown stays untouched.
+No admin panel, database, or upload flow. `publish` writes the same catalog
+records directly, so the rundown stays untouched.

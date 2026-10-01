@@ -2116,3 +2116,35 @@ def render_short(vod_dir: Path, candidate_index: int = 0) -> Path:
 
 def render_shorts(vod_dir: Path) -> list[Path]:
     return [render_short(vod_dir, index) for index in range(len(short_candidates(vod_dir)))]
+
+
+def validated_short_renders(vod_dir: Path) -> list[dict]:
+    manifest = read_json(vod_dir / "manifest.json")
+    source = Path(manifest["source"])
+    source_stat = source.stat()
+    layout_path = vod_dir / "layout.reviewed.json" if (vod_dir / "layout.reviewed.json").exists() else vod_dir / "layout.json"
+    layout = read_json(layout_path)
+    source_identity = {"path": str(source.resolve()), "size": source_stat.st_size, "mtime_ns": source_stat.st_mtime_ns}
+    renders = []
+    for index, item in enumerate(short_candidates(vod_dir), 1):
+        render_name = item.get("render_name") or f"short-{item.get('output_number', index):02d}"
+        sidecar_path = vod_dir / "renders" / f"{render_name}.json"
+        render_path = vod_dir / "renders" / f"{render_name}.mp4"
+        captions_path = vod_dir / f"{render_name}.ass"
+        specific_review = vod_dir / f"{render_name}.captions.reviewed.json"
+        caption_review = specific_review if specific_review.exists() else vod_dir / "short-captions.reviewed.json"
+        sidecar = read_json(sidecar_path) if sidecar_path.exists() else {}
+        expected_duration = sum(segment["source_end"] - segment["source_start"] for segment in item.get("segments") or [item])
+        valid = render_path.exists() and sidecar.get("render_version") == 1 \
+            and sidecar.get("output") == _media_fingerprint(render_path) and sidecar.get("candidate") == _fingerprint(item) \
+            and sidecar.get("captions") == _file_fingerprint(captions_path) and sidecar.get("layout") == _fingerprint(layout) \
+            and sidecar.get("caption_review") == _file_fingerprint(caption_review) \
+            and sidecar.get("source") == source_identity \
+            and abs(float(sidecar.get("expected_duration", -1)) - expected_duration) <= 0.01 \
+            and abs(float(sidecar.get("duration", -1)) - expected_duration) <= 0.5 \
+            and sidecar.get("width") == 1080 and sidecar.get("height") == 1920 and sidecar.get("audio") is True
+        if not valid:
+            continue
+        renders.append({"candidate": item, "render": render_path, "render_name": render_name,
+                        "duration": float(sidecar["duration"]), "width": 1080, "height": 1920})
+    return renders

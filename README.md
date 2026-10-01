@@ -52,6 +52,7 @@ uv run milloclips review-long workspace/<vod-id>
 uv run milloclips find-shorts workspace/<vod-id>
 uv run milloclips render-shorts workspace/<vod-id>
 uv run milloclips thumbnails workspace/f1ca1ecfc69f
+uv run milloclips publish workspace/<vod-id> --approve
 ```
 
 Use `--mock` on AI commands to exercise the pipeline without API calls. Every
@@ -183,6 +184,27 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for artifact contracts.
 The public gallery lives in [`website/`](website/) and is a separate SvelteKit
 app reading `static/catalog.json`. See [`website/README.md`](website/README.md).
 Automatic game ranking and polished effects are still deferred.
+
+`publish` is the only step that writes the gallery. It reads the VOD's existing
+artifacts, matches its catalog entry by the Kick URL in `manifest.json` (override
+with `--vod-id`), then upserts the `long`/`shorts` records and stages assets under
+`website/static/`:
+
+```bash
+uv run milloclips publish workspace/7ecad9c2b4a0 --approve
+uv run milloclips publish workspace/7ecad9c2b4a0 --approve --slug udyr-arena
+```
+
+Publishing requires `--approve`; nothing goes public automatically and no AI or
+network call is made. The long clip is validated from `renders/long-rough.mp4`
+(1280x720 with audio), only shorts with a matching render sidecar are published,
+the poster comes from `renders/thumbnail.png` and the clip title from the selected
+(or provisional) thumbnail candidate. Media is hardlinked into
+`website/static/media/` and posters/short frames into `static/images/`. The VOD
+record keeps its curated Kick metadata; publish only adds the clips and clears
+`pendingReason`. Pass `--youtube <video_id>` to record the long form as
+`provider: youtube` instead of a local file once it is uploaded; re-running with
+that flag is the whole migration and no other field changes.
 
 ## Status
 
