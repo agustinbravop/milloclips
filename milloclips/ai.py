@@ -446,15 +446,23 @@ Think cinematically staged, game-faithful Rift/character artwork, a relevant bui
 or a simpler close-perspective Rift backdrop and exceptionally strong headline. No mandatory slots.
 Use reference examples for visual language, never copy their content or people's faces.
 Choose different hooks, not synonyms. Headlines must be natural Spanish, never keyword soup.
-Do not copy incomplete sentences as titles. Use complete, natural ideas grounded in this video.
-Write natural Spanish gaming packaging. First-person copy is optional: the face already identifies
+Name the hook's concrete subject, mechanic or consequence. Reject interchangeable labels like
+ELECCIÓN INSÓLITA, PICK RARO or QUÉ LOCURA; they do not tell viewers what is special about this video.
+Write titles as something a Spanish-speaking League creator would actually say, not compressed
+keywords. Prefer plain, direct language over clever phrasing. Before returning, read the title and
+headline aloud mentally and fix unnatural grammar or word combinations. Ground both in this video.
+Package a reason to watch, not merely a label for a mechanic or lesson. First-person copy is optional: the face already identifies
 ElmilloR. The title and thumbnail headline must work together to raise a specific viewer question.
+Create curiosity through a concrete statement, not default question copy. Video titles are FULL CAPS,
+more descriptive than the 2-4-word thumbnail headline, with relevant action/pick/role/build/stakes.
+Use Thebausffs/Nemesis-style directness, with some Drututt influence; do not repeat the headline.
 Identify the relevant champion from each concept's evidence. Do not require all three to feature
 the same champion. A teammate's play is not ElmilloR's achievement. Images match evidence list order.
 Include a canonical Riot champion asset name only when identified and relevant; never invent it.
 Optional assets: up to six objects {"kind":"item"|"rune","key":"numeric Riot ID"}.
 Only request an icon when the supplied evidence establishes that exact item/rune;
 omit uncertain IDs. Do not add unrelated icons as decoration.
+Include the exact evidenced item/rune icon when it is the defining reason the hook works.
 For hook, use EXACTLY one of these strings: "high-stakes/amazing moment",
 "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal".
 A strategy can claim it works only when the evidence proves its payoff. Do not turn a hypothetical
@@ -464,13 +472,17 @@ paraphrases and grammar are encouraged. Relate the story to Elmiillor's actual e
 never attribute an enemy or teammate's achievement to him. Titles complement rather than repeat
 the headline. Use template action, identity, or strategy.
 Available expressions: shocked, hold-on, overly-hyped, smiling. Prefer smiling for positive/playful
-hooks and normal excitement. Reserve overly-hyped for RARE, genuinely extreme emotional peaks:
+hooks and normal excitement. Questioning copy needs curiosity or skepticism, never overly-hyped.
+Reserve overly-hyped for RARE, genuinely extreme emotional peaks:
 ordinary wins or strong plays are not enough. Explain the exceptional evidence and why smiling
 would undersell it if selecting overly-hyped. Still use shock or skepticism when the actual hook
 calls for them; do not force smiles onto disasters. Cite a supplied beat_id. Return JSON only:
 Each concept must include evidence: an exact short phrase copied from its cited beat's spoken text.
 If a supplied beat cannot support a concise truthful concept, omit it rather than guessing.
-{"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","background":"gameplay","expression":"shocked","beat_id":1,"evidence":"exact copied phrase","champion":""}]}
+Each concept MUST include a nonempty reaction_reason explaining the chosen photo's emotional fit
+to the evidence and copy. Before returning, check all three have reaction_reason, a 2-4-word
+headline (at most 40 characters), and an exact evidence quote from their cited beat.
+{"concepts":[{"title":"...","headline":"...","hook":"...","template":"action","background":"gameplay","expression":"shocked","reaction_reason":"Why this real photo matches the evidenced hook and copy","beat_id":1,"evidence":"exact copied phrase","champion":"","assets":[]}]}
         Story: """ + story + "\nEvidence:\n" + json.dumps(evidence, ensure_ascii=False)
         preferences = thumbnail_preferences(self.vod_dir)
         prompt += "\nPersistent human thumbnail feedback (apply to all candidates):\n" + preferences
@@ -505,8 +517,10 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
         audit = cache.get("audit") or self._json(
             "Audit proposed League thumbnail concepts against the supplied evidence. Natural Spanish "
             "paraphrases are allowed; unsupported game entities, achievements, outcomes, and teammate "
-            "plays attributed to ElmilloR are not. Reject awkward/incomplete copy and generic ME PASÓ ESTO "
-            "headlines. Check requested champion/item/rune assets against gameplay and speech. "
+            "plays attributed to ElmilloR are not. Judge copy separately from factual grounding: "
+            "reject unnatural Spanish, compressed keyword strings and copy that merely labels a topic "
+            "without a reason to watch. Do not excuse awkward wording because the subject is evidenced. "
+            "Check requested champion/item/rune assets against gameplay and speech. "
             "A strategy claim needs evidence; do not turn plans/hypotheticals into achievements. "
             'Return JSON {"reviews":[{"index":0,"accepted":true,"reason":"..."}]}, one per concept. '
             "Concepts: " + json.dumps(parsed.get("concepts", []), ensure_ascii=False)
@@ -534,7 +548,11 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             evidence = str(concept.get("evidence", "")).strip()[:160]
             cited = _words(evidence)
             title = str(concept.get("title", headline)).strip()[:100]
-            if not evidence or evidence.casefold() not in str(by_id[concept["beat_id"]].get("text", "")).casefold():
+            spoken = str(by_id[concept["beat_id"]].get("text", "")).casefold()
+            quoted = re.findall(r"[a-záéíóúüñ0-9]+", evidence.casefold())
+            # Accept a quote that only differs by joined or split words ("one shot" for "oneshot").
+            if not evidence or not quoted or (evidence.casefold() not in spoken
+                                              and not re.search(".*?".join(map(re.escape, quoted)), spoken)):
                 continue
             if concept.get("hook") not in THUMBNAIL_HOOKS or concept.get("template") not in {"action", "identity", "strategy"}:
                 continue
@@ -546,7 +564,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             if {"podria", "podría", "casi", "si"} & cited and concept["hook"] in {"high-stakes/amazing moment", "extremely good performance"}:
                 continue
             output.append({
-                "title": thumbnail_copy(title),
+                "title": thumbnail_copy(title).upper(),
                 "headline": thumbnail_copy(headline).upper(),
                 "hook": str(concept.get("hook", "")).strip()[:120],
                 "template": str(concept.get("template", "action")).strip(),
@@ -566,7 +584,7 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
         if self.mock:
             return {"winner": 1, "reason": "Mock comparison; review the contact sheet."}
         decision = self._json(
-            "Compare these three rendered Spanish League YouTube thumbnails, in numbered order. "
+            "Compare these rendered Spanish League YouTube thumbnails, in numbered order. "
             "Choose for readable mobile-size text, recognizable large ElmilloR reaction, clear game subject, "
             "visual hierarchy, contrast, and a compelling truthful hook. Penalize awkward Spanish, "
             "clutter, client/browser/loading backgrounds, and obscured faces. Do not claim CTR estimates. "
@@ -574,8 +592,8 @@ If a supplied beat cannot support a concise truthful concept, omit it rather tha
             "The first images are full-size candidates in order; the remaining images are their actual "
             "280x158 feed previews in the same order. Check exact headline spelling/accents/completeness "
             "against the EXACT metadata headline, not an imagined corrected version; check unreadable text, synthetic extra people/faces, fake stats, incorrect champions "
-            "and whether icons obscure eyes/mouth. The real photo was composited from source, so don't "
-            "mistake its crop or outline for a generated likeness. Reject publication if an essential check fails. "
+            "and whether icons obscure eyes/mouth. The real photo is integrated into the finished image, "
+            "so judge identity, expression and pose rather than expecting a pixel-exact cutout. Reject publication if an essential check fails. "
             'Return JSON {"winner":1,"reason":"short explanation","candidates":'
             '[{"number":1,"strength":"...","weakness":"...","headline_matches":true,'
             '"extra_people":false,"publishable":false}],"publishable":false,"next_changes":["..."]}. '

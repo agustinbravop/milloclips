@@ -67,7 +67,7 @@ def parser() -> argparse.ArgumentParser:
     render_all_shorts = commands.add_parser("render-shorts", help="Render every passing vertical short")
     render_all_shorts.add_argument("vod_dir", type=Path)
 
-    thumbnails = commands.add_parser("thumbnails", help="Generate three evidence-backed thumbnail candidates and a contact sheet")
+    thumbnails = commands.add_parser("thumbnails", help="Generate two evidence-backed thumbnail candidates and a contact sheet")
     thumbnails.add_argument("vod_dir", type=Path)
     thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
     thumbnails.add_argument("--force", action="store_true")

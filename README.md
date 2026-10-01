@@ -106,25 +106,31 @@ metadata as `long-cuts.json`, and entries shaped as
 The decision carries the same event anchors, evidence, context flags and optional
 cold-open fields as a raw precise decision; stale overrides fail explicitly.
 
-`thumbnails` creates three evidence-backed concepts, then Nano art-directs each
-using the channel's approved visual references. **GPT Image 2.5 Sunburst** edits a
-masked placement template into game-faithful scene artwork, effects, and headline
-typography. Original reaction-photo and icon layers are restored after generation
-and final resizing: the model cannot replace ElmilloR's real face or redraw exact
-icons in the final image. Six-item layouts are available when actual item IDs are
+`thumbnails` proposes three evidence-backed concepts, then Nano art-directs the
+first two accepted concepts using the channel's approved visual references.
+**GPT Image 2.5 Sunburst** edits a
+placement template into a complete thumbnail in one image call per candidate.
+The template includes the real reaction and official icons; the returned image
+integrates them with game-faithful artwork and topmost headline typography. No
+photo is pasted over the result. Minor integration changes are allowed; identity,
+expression, inward gaze, lettering and icon fidelity require visual review.
+Style-reference photos and full editorial guidelines stay with Nano; the image
+generator receives only ElmilloR's original photo as its human identity reference.
+Six-item layouts are available when actual item IDs are
 evidenced; there is no mandatory champion badge or fixed title layout.
 
 The four reactions in `assets/faces/` are reused; `framing.json` defines normalized
-head-focused source crops. Reference video URLs and the user's visual notes live
+head-focused source crops. Source photos face left, so right placement is unflipped
+and left is mirrored. Reference video URLs and the user's visual notes live
 in `assets/thumbnails/references.json`. `--prepare-references` caches their actual
 YouTube thumbnails without AI calls. Source images are style examples, never
 permission to invent the same champions, stats or creator faces in another video.
 
 The contact sheet, **280x158 feed previews**, candidate metadata, source placement
-templates/masks, raw Sunburst artwork, request/usage records, and Nano's visual
-review remain under `renders/thumbnails/`. `thumbnail-brief.json` caches concepts
-in the VOD workspace. Candidate 1 is a provisional `renders/thumbnail.png` until
-a winner is explicitly selected:
+templates/masks, raw Sunburst artwork and request/usage records remain under
+`renders/thumbnails/`. `thumbnail-brief.json` caches concepts in the VOD workspace.
+Generation exports candidate 1 to `renders/thumbnail.png`; compare the sheet and
+override with `--choose`:
 
 ```bash
 uv run milloclips thumbnails workspace/f1ca1ecfc69f --choose 2
@@ -132,17 +138,17 @@ uv run milloclips thumbnails workspace/f1ca1ecfc69f --choose-ai
 uv run milloclips thumbnails workspace/f1ca1ecfc69f --revise 1 --headline "BARÓN AL LÍMITE" --edit "Correct the headline; keep the original face and scene."
 ```
 
-Selection does not regenerate candidates. Generation writes `review.raw.json`
-with a recommendation and publication judgment, comparing full-size and feed-size
-renders. `--choose-ai` can adopt that review; its decision is cached separately in
-`selection.raw.json`. `--revise` makes one explicit image-edit call, retaining the
+Selection does not regenerate candidates. Generation runs no image review; you
+compare the two candidates yourself. `--choose-ai` still runs Nano's full-size and
+feed-size comparison on demand and caches that judgment in `selection.raw.json`.
+`--revise` makes one explicit image-edit call, retaining the
 original artwork. Corrections live in `revisions.reviewed.json`; matching rerenders
 retain them, while changed source renders invalidate those overrides.
 Human picks live separately in `selection.reviewed.json`. `selection.json`
 records the effective choice; unchanged rerenders preserve the selection.
 `--force` refreshes concepts without redownloading cached League assets.
 Concepts receive a separate evidence/copy audit; real runs stop for review if
-fewer than three pass instead of silently backfilling generic thumbnails.
+fewer than two pass instead of silently backfilling generic thumbnails.
 
 Each Sunburst request is cached by prompt, model settings, mask and all input image
 contents. `--force` refreshes concepts, not unchanged paid artwork. The default
@@ -168,11 +174,11 @@ uv run milloclips thumbnails workspace/f1ca1ecfc69f
 
 Saving feedback does not render or call AI. On the next generation, preferences
 and this video's review notes are supplied to the concept writer, evidence/copy
-auditor, art director, image generator, and image selector. Candidate numbers have
+auditor, art director and image generator; selection is yours. Candidate numbers have
 no fixed editorial roles; each concept chooses its visual treatment from its hook.
 Changes invalidate thumbnail concept and AI-choice caches while retaining
 downloaded media, transcripts, frames, and League assets. AI choice includes a
-`publishable` judgment and `next_changes`, so best-of-three need not mean ready
+`publishable` judgment and `next_changes`, so the top candidate need not mean ready
 to publish. References guide the style, while reviewed notes can change generated
 scenes, typography and effects without editing fixed templates. Exact foreground
 asset handling and validation remain deterministic code.

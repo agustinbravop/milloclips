@@ -16,6 +16,7 @@ from .thumbnail_art import generate_artwork, plan_artwork
 
 
 SIZE = (1280, 720)
+CANDIDATES = 2
 YELLOW = "#E9FF1F"
 PATCH = "16.18.1"
 DRAGON = "https://ddragon.leagueoflegends.com/cdn"
@@ -103,18 +104,21 @@ def _reaction(canvas: Image.Image, photo: Path | None, side: str = "right", crop
         face = ImageOps.contain(face, (width, height), Image.Resampling.LANCZOS)
         zoom = 1.1 if crop else 1.5  # Head-specific crops already remove the unused torso.
         face = face.resize((round(face.width * zoom), round(face.height * zoom)), Image.Resampling.LANCZOS)
-        if mirrored is True or (mirrored is None and side == "right"):
+        if mirrored is True or (mirrored is None and side == "left"):
             face = ImageOps.mirror(face)
+    # Outline the silhouette before pane clipping, never the rectangular crop edge.
+    mask = face.getchannel("A")
+    outlined = Image.new("RGBA", face.size, "white")
+    outlined.putalpha(mask.filter(ImageFilter.MaxFilter(13)))
+    outlined.alpha_composite(face)
     pixels = Image.new("RGBA", (width, height))
     paste = ((width - face.width) // 2, max(0, height - face.height))
-    pixels.alpha_composite(face, paste)
-    # Pad after clipping so the rim also extends around straight photo edges.
-    pixels = ImageOps.expand(pixels, border=6, fill=(0, 0, 0, 0))
-    x, y = x - 6, y - 6
+    pixels.alpha_composite(outlined, paste)
     mask = pixels.getchannel("A")
-    rim = mask.filter(ImageFilter.MaxFilter(13))
-    canvas.paste("white", (x, y), rim)
-    canvas.paste(pixels.convert("RGB"), (x, y), mask)
+    if canvas.mode == "RGBA":
+        canvas.alpha_composite(pixels, (x, y))
+    else:
+        canvas.paste(pixels.convert("RGB"), (x, y), mask)
 
 
 def _game_asset(output: Path, kind: str, key: str, force: bool = False) -> Path:
@@ -195,6 +199,30 @@ def _layout(frame: Path, concept: dict, photo: Path | None, assets: list[Path], 
     return canvas
 
 
+def _artwork_prompt(concept: dict, direction: dict) -> str:
+    gaze = "right, facing left" if direction["subject_side"] == "right" else "left, facing right"
+    return (
+        "Edit image 1 into ONE finished 16:9 Spanish League of Legends YouTube thumbnail. "
+        "It contains ElmilloR's real reaction photo; integrate that person, preserving identity, expression, "
+        f"headset and pose. Keep him on the {gaze}; do not mirror him again. "
+        "One person only, one thin white silhouette outline; no duplicate head, offset likeness, "
+        "human-shaped shadow or straight outline along photo crop edges. Remove the desktop mic if feasible.\n"
+        "Layer order: cinematic game environment, reaction photo, headline ON TOP. Text may overlap lower torso, "
+        "never eyes/mouth; every letter fully visible, no clipping or covering by the person.\n"
+        f"Exact headline: {json.dumps(concept['headline'], ensure_ascii=False)}. "
+        "Huge, clean bold type; solid white letters and one restrained accent color. Smooth solid fills: "
+        "NO particles, speckles, cracks, distressing or texture inside letters. "
+        "No underlines, red laser streaks, glowing highlight bars or light trails across/beneath text.\n"
+        "Scene: " + direction["scene"] + "\n"
+        "Image 2 is gameplay evidence; following game assets establish the correct subject. "
+        "The LAST image is the original ElmilloR photo, the sole human identity reference. "
+        "Use it for facial features, hair, expression and headset, not placement; image 1 sets orientation. "
+        "Never blend another creator's face into him. "
+        "Use supplied icons faithfully, only once. No invented stats, HUD, extra words or fake achievements. "
+        "Return the finished thumbnail, not a layout board."
+    )
+
+
 def _generated_layout(ai: AI, output: Path, frame: Path, concept: dict, photo: Path, assets: list[Path], references: list[dict], budget: float) -> tuple[Image.Image, dict]:
     framing_path = photo.parent / "framing.json"
     framing = read_json(framing_path) if framing_path.exists() else {}
@@ -212,8 +240,8 @@ def _generated_layout(ai: AI, output: Path, frame: Path, concept: dict, photo: P
     tag = hashlib.sha256(template.tobytes()).hexdigest()[:16]
     template_path, mask_path = output / f"layout-{tag}.png", output / f"mask-{tag}.png"
     template.save(template_path)
-    mask = Image.new("RGBA", SIZE, "white")
-    mask.putalpha(protected.getchannel("A"))
+    # The finished image includes photo and text; allow the model to integrate both.
+    mask = Image.new("RGBA", SIZE, (255, 255, 255, 0))
     mask.save(mask_path)
     art_reference = None
     if concept.get("champion", "").isalnum():
@@ -221,41 +249,18 @@ def _generated_layout(ai: AI, output: Path, frame: Path, concept: dict, photo: P
     inputs = [template_path, game_path]
     if art_reference:
         inputs.append(art_reference)
-    inputs += assets + [Path(reference["path"]) for reference in references]
-    prompt = (
-        "Create a premium Spanish League creator thumbnail by editing the FIRST image. "
-        "It is a placement template, not the desired finished artwork. Use the transparent mask areas "
-        "for a dramatically better game scene, typography, light and visual treatment. The real reaction "
-        "photo and exact icons in opaque mask areas are protected, and will be restored from originals. "
-        "Do not generate, redraw, replace or add a person, face, body, chair, microphone or human pose. "
-        "No people from the style references may appear. Don't create a second face underneath the real one. "
-        "The second image is real gameplay evidence; subsequent champion artwork/icons teach the actual "
-        "subject. Last images are style references ONLY: borrow hierarchy, tight-face framing, bold type "
-        "and cinematic/game-faithful environment, never their exact content, words or stats. "
-        "Avoid the ordinary screenshot-plus-caption look. Use coherent environmental staging, perspective, "
-        "depth and purposeful light. A champion can be enlarged like a crisp game cutout on the Rift. "
-        "A headline-focused scene can be simpler, with no extra character. No fake damage numbers, stat "
-        "values, kill banners or unlabeled icons. Do not draw icon duplicates or blank inventory slots. "
-        f"Render EXACTLY this headline, with correct accents and spelling: {json.dumps(concept['headline'], ensure_ascii=False)}. "
-        "Make the typography large, treated and immediately legible at mobile size, complementing the "
-        "photo and subject. Keep every word out of the protected photo area and timestamp corner. "
-        "Do not print the video title, prompts, reference labels or layout coordinates. "
-        "Art direction: " + direction["scene"] + "\nTitle (context only): " + concept["title"]
-        + "\nGrounded concept: " + json.dumps(concept, ensure_ascii=False)
-        + "\nHuman style guidance: " + preferences
-        + "\nInputs in order: " + json.dumps([path.name for path in inputs])
-        + "\nStyle-reference lessons: " + json.dumps(references, ensure_ascii=False)
-        + "\nFinish as one 16:9 thumbnail, not a grid, collage board or labeled mockup."
-    )
+    # Style photos stay in Nano art direction; no competing human identities reach Sunburst.
+    inputs += assets + [photo]
+    prompt = _artwork_prompt(concept, direction)
     artwork = generate_artwork(ai, output, prompt, inputs, mask_path, budget)
     with Image.open(artwork) as source:
         canvas = source.convert("RGBA").resize(SIZE, Image.Resampling.LANCZOS)
-    # Reference-image generation and masking are not pixel-preservation guarantees.
-    # Restore the complete original cutout/icon layer after the final resize.
-    canvas.alpha_composite(protected)
+    # Do not paste the photo again: that hides lettering and exposes offset copies.
     return canvas.convert("RGB"), {"artwork": str(artwork), "direction": direction, "template": str(template_path),
                                     "mask": str(mask_path), "face_crop": framing.get(concept["expression"]),
-                                    "reaction_mirrored": direction["subject_side"] == "right",
+                                    "reaction_mirrored": direction["subject_side"] == "left",
+                                    "composition_mode": "baked-photo", "reference_ids": [],
+                                    "direction_reference_ids": direction.get("reference_ids", []),
                                     "exact_assets": [str(asset) for asset in assets]}
 
 
@@ -307,10 +312,10 @@ def _brief(vod_dir: Path, plan: dict, beats: list[dict], frames: dict[int, Path]
     evidence += [beat for beat in beats if beat not in evidence and beat.get("type") in {"STRATEGY", "SETUP", "REACTION"}][:12]
     concepts = ai.thumbnail_concepts(evidence, plan.get("story", ""), [frames[beat["id"]] for beat in evidence], force=force, references=references, reactions=reactions) if ai else []
     concepts = [concept for concept in concepts if concept.get("beat_id") in frames and concept.get("template") in {"action", "identity", "strategy"}]
-    if len(concepts) < 3:
+    if len(concepts) < CANDIDATES:
         if ai and not ai.mock:
-            raise ValueError("Fewer than three grounded thumbnail concepts; inspect thumbnail-concepts.raw.json and retry. No generic backfill was rendered.")
-        concepts = (concepts + _fallback_concepts(beats))[:3]
+            raise ValueError("Fewer than two grounded thumbnail concepts; inspect thumbnail-concepts.raw.json and retry. No generic backfill was rendered.")
+        concepts = (concepts + _fallback_concepts(beats))[:CANDIDATES]
     write_json(path, {**key, "concepts": concepts})
     return concepts
 
@@ -326,8 +331,8 @@ def render_thumbnails(vod_dir: Path, faces: Path = Path("assets/faces"), force: 
         raise ValueError(f"Add real reaction cutouts to {faces} before generating thumbnails")
     concepts = _brief(vod_dir, plan, beats, frames, ai, force, references, reactions)
     rows = []
-    for number, concept in enumerate(concepts, 1):
-        concept = {**concept, "title": thumbnail_copy(concept["title"]), "headline": thumbnail_copy(concept["headline"])}
+    for number, concept in enumerate(concepts[:CANDIDATES], 1):
+        concept = {**concept, "title": thumbnail_copy(concept["title"]).upper(), "headline": thumbnail_copy(concept["headline"])}
         photo = _reaction_photo(faces, concept.get("expression", ""))
         assets, splash = [], None
         if (not ai or ai.mock) and concept.get("champion", "").isalnum():
@@ -348,10 +353,33 @@ def render_thumbnails(vod_dir: Path, faces: Path = Path("assets/faces"), force: 
         canvas.save(final, optimize=True)
         rows.append({**concept, **details, "number": number, "background": details.get("artwork", str(splash or frames[concept["beat_id"]])), "frame": str(frames[concept["beat_id"]]),
                       "reaction_photo": str(photo) if photo else None, "render": str(final)})
-    return _publish_candidates(vod_dir, rows, ai)
+    return _publish_candidates(vod_dir, rows)
 
 
-def _publish_candidates(vod_dir: Path, rows: list[dict], ai: AI | None) -> Path:
+def _contact_sheet(previews: list[Image.Image], rows: list[dict], width: int, font_size: int) -> Image.Image:
+    font = ImageFont.truetype(FONT, font_size)
+    captions = []
+    for row in rows:
+        lines = [f"{row['number']:02d} /"]
+        for word in row["title"].split():
+            line = f"{lines[-1]} {word}"
+            if font.getlength(line) > width - 16:
+                lines.append(word)
+            else:
+                lines[-1] = line
+        captions.append("\n".join(lines))
+    header = max(len(caption.splitlines()) for caption in captions) * (font_size + 4) + 16
+    height = round(width * 9 / 16)
+    sheet = Image.new("RGB", ((width + 10) * len(rows) + 10, header + height + 25), "#10121b")
+    draw = ImageDraw.Draw(sheet)
+    for index, (preview, caption) in enumerate(zip(previews, captions, strict=True)):
+        x = 10 + index * (width + 10)
+        sheet.paste(preview.resize((width, height), Image.Resampling.LANCZOS), (x, header))
+        draw.multiline_text((x + 8, 8), caption, font=font, fill="white", spacing=4)
+    return sheet
+
+
+def _publish_candidates(vod_dir: Path, rows: list[dict]) -> Path:
     output = vod_dir / "renders" / "thumbnails"
     history = output / "revisions.reviewed.json"
     for correction in read_json(history) if history.exists() else []:
@@ -368,36 +396,19 @@ def _publish_candidates(vod_dir: Path, rows: list[dict], ai: AI | None) -> Path:
             previews.append(canvas.resize((480, 270)))
             canvas.resize((280, 158), Image.Resampling.LANCZOS).save(mobile_path, quality=95)
         row["mobile_render"] = str(mobile_path)
-    sheet = Image.new("RGB", (1480, 350), "#10121b")
-    draw = ImageDraw.Draw(sheet)
-    for index, preview in enumerate(previews):
-        x = 10 + index * 490
-        sheet.paste(preview, (x, 55))
-        draw.text((x + 8, 18), f"{index + 1:02d} / {rows[index]['headline']}", font=ImageFont.truetype(FONT, 21), fill="white")
+    sheet = _contact_sheet(previews, rows, 480, 21)
     sheet_path = output / "contact-sheet.jpg"
     sheet.save(sheet_path, quality=90)
-    mobile = Image.new("RGB", (860, 198), "#10121b")
-    for index, preview in enumerate(previews):
-        mobile.paste(preview.resize((280, 158), Image.Resampling.LANCZOS), (index * 290, 30))
-        ImageDraw.Draw(mobile).text((index * 290 + 8, 7), str(index + 1), font=ImageFont.truetype(FONT, 18), fill="white")
+    mobile = _contact_sheet(previews, rows, 280, 18)
     mobile.save(output / "mobile-contact-sheet.jpg", quality=95)
     write_json(output / "variants.json", rows)
-    if ai and not ai.mock:
-        review_path = output / "review.raw.json"
-        review_key = {"review_version": 3, "signature": _signature(rows), "preferences": thumbnail_preferences(vod_dir), "model": ai.editorial_model}
-        if not review_path.exists() or any(read_json(review_path).get(key) != value for key, value in review_key.items()):
-            write_json(review_path, {**ai.choose_thumbnail(rows), **review_key})
     selection = output / "selection.reviewed.json"
     if selection.exists():
         previous = read_json(selection)
         if previous.get("signature") == _signature(rows):
             select_thumbnail(vod_dir, previous["winner"])
             return sheet_path
-    raw_selection = output / "selection.raw.json"
-    if raw_selection.exists() and read_json(raw_selection).get("signature") == _signature(rows) and ai:
-        select_thumbnail(vod_dir, ai=ai)
-        return sheet_path
-    # Candidate 1 is a provisional export, never an editorial winner.
+    # Candidate 1 is the export; the human compares candidates and may override.
     with Image.open(rows[0]["render"]) as image:
         image.save(vod_dir / "renders" / "thumbnail.png", optimize=True)
     write_json(output / "selection.json", {"status": "pending", "provisional": 1, "signature": _signature(rows)})
@@ -405,7 +416,7 @@ def _publish_candidates(vod_dir: Path, rows: list[dict], ai: AI | None) -> Path:
 
 
 def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline: str | None = None, image_budget: float = 5) -> Path:
-    """One explicit edit call; retain the original artwork and exact foreground."""
+    """One explicit edit call; retain the original artwork and recorded composition mode."""
     output = vod_dir / "renders" / "thumbnails"
     rows = read_json(output / "variants.json")
     if type(candidate) is not int or not 1 <= candidate <= len(rows) or not edit.strip():
@@ -423,11 +434,14 @@ def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline:
     _reaction(protected, Path(row["reaction_photo"]), row["direction"]["subject_side"], row.get("face_crop"), row.get("reaction_mirrored", False))
     for asset, position in zip(assets, row["direction"]["asset_positions"], strict=True):
         _badge(protected, asset, position["x"], position["y"], position["size"])
-    # Editing a previously rendered photo can leave a shifted/duplicated head
-    # outside its alpha contour. Lock and restore the entire photo pane on edits.
-    box = (0, 0, 616, 720) if row["direction"]["subject_side"] == "left" else (664, 0, 1280, 720)
-    with Image.open(row["template"]) as original:
-        protected.paste(original.convert("RGBA").crop(box), box[:2])
+    baked = row.get("composition_mode") == "baked-photo"
+    if baked:
+        protected = Image.new("RGBA", SIZE)
+    else:
+        # Preserve legacy pixel-locked revisions in their recorded orientation.
+        box = (0, 0, 616, 720) if row["direction"]["subject_side"] == "left" else (664, 0, 1280, 720)
+        with Image.open(row["template"]) as original:
+            protected.paste(original.convert("RGBA").crop(box), box[:2])
     with Image.open(row["render"]) as source:
         base = source.convert("RGBA")
     base.alpha_composite(protected)
@@ -440,13 +454,12 @@ def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline:
     prompt = (
         "Edit the FIRST thumbnail according to this specific feedback: " + edit.strip()
         + "\nKeep the composition and visual style except where the edit requests a change. "
-        "The opaque mask protects the original human photo/icons. Do not redraw or add people, faces, "
-        "bodies or fake stats. Do not move or scale the protected assets. The original foreground will be "
-        "restored pixel-for-pixel. Do not bring in another creator or person; any unprotected human "
-        "outside the real cutout must be removed. Only the first image and exact icon files are supplied; "
-        "retain the candidate's existing style instead of borrowing faces from other thumbnails. "
+        + ("Keep the single ElmilloR reaction's identity, expression, pose, inward gaze and headset. "
+           "No second face, ghost copy or offset shadow. Headline is topmost, never hidden by the photo. " if baked else
+           "The opaque mask protects the original human photo/icons, restored pixel-for-pixel. "
+           "Do not move/redraw them or add people; remove any unprotected human copy. ")
+        + "Solid smooth letters: no particles, speckles, cracks or distressed textures. No fake stats. "
         "The ONLY rendered words must be this exact headline: " + json.dumps(row["headline"], ensure_ascii=False)
-        + "\nHuman guidance: " + thumbnail_preferences(vod_dir)
     )
     history = output / "revisions.reviewed.json"
     corrections = read_json(history) if history.exists() else []
@@ -465,7 +478,7 @@ def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline:
     correction["result_row"] = row
     write_json(history, corrections)
     rows[candidate - 1] = row
-    return _publish_candidates(vod_dir, rows, ai)
+    return _publish_candidates(vod_dir, rows)
 
 
 def _signature(rows: list[dict]) -> str:
@@ -480,14 +493,12 @@ def select_thumbnail(vod_dir: Path, winner: int | None = None, ai: AI | None = N
     preferences = thumbnail_preferences(vod_dir)
     if winner is None:
         if ai is None:
-            raise ValueError("Choose candidate 1, 2, or 3, or supply AI for comparison")
+            raise ValueError(f"Choose candidate 1-{len(rows)}, or supply AI for comparison")
         cached = output / "selection.raw.json"
-        review_path = output / "review.raw.json"
-        if cached.exists() and read_json(cached).get("signature") == signature and read_json(cached).get("preferences") == preferences and read_json(cached).get("model") == ai.editorial_model and read_json(cached).get("review_version") == 3:
+        if cached.exists() and all(read_json(cached).get(key) == value for key, value in
+                                   (("signature", signature), ("preferences", preferences),
+                                    ("model", ai.editorial_model), ("review_version", 3))):
             decision = read_json(cached)
-        elif review_path.exists() and read_json(review_path).get("signature") == signature and read_json(review_path).get("preferences") == preferences and read_json(review_path).get("model") == ai.editorial_model and read_json(review_path).get("review_version") == 3:
-            decision = read_json(review_path)
-            write_json(cached, decision)
         else:
             decision = ai.choose_thumbnail(rows)
             write_json(cached, {**decision, "signature": signature, "preferences": preferences, "model": ai.editorial_model, "review_version": 3})
@@ -497,7 +508,7 @@ def select_thumbnail(vod_dir: Path, winner: int | None = None, ai: AI | None = N
         decision = {}
         source = "human"
     if type(winner) is not int or winner not in range(1, len(rows) + 1):
-        raise ValueError("Thumbnail winner must be candidate 1, 2, or 3")
+        raise ValueError(f"Thumbnail winner must be candidate 1-{len(rows)}")
     selected = {**decision, "status": "selected", "source": source, "winner": winner, "signature": signature}
     final = vod_dir / "renders" / "thumbnail.png"
     with Image.open(rows[winner - 1]["render"]) as image:

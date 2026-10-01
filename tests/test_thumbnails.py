@@ -8,28 +8,42 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from milloclips.ai import AI, thumbnail_copy, thumbnail_preferences
 from milloclips.cli import main
-from milloclips.thumbnails import _game_asset, _generated_layout, _publish_candidates, _reaction, _reaction_photo, prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
+from milloclips.thumbnails import _contact_sheet, _game_asset, _generated_layout, _publish_candidates, _reaction, _reaction_photo, prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
 from milloclips.thumbnail_art import MODEL, generate_artwork, plan_artwork
 
 
 class ThumbnailTests(unittest.TestCase):
-    def test_right_reaction_is_mirrored_and_old_orientation_can_be_preserved(self):
+    def test_reactions_face_inward_and_old_orientation_can_be_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             photo = Path(tmp) / "reaction.png"
             source = Image.new("RGBA", (100, 100), "red")
             source.paste("blue", (50, 0, 100, 100))
             source.save(photo)
             original, inward = [Image.new("RGB", (1280, 720)) for _ in range(2)]
-            _reaction(original, photo, "right", mirrored=False)
+            _reaction(original, photo, "right", mirrored=True)
             _reaction(inward, photo, "right")
-            self.assertEqual(original.getpixel((730, 300)), (255, 0, 0))
-            self.assertEqual(inward.getpixel((730, 300)), (0, 0, 255))
-            self.assertEqual(original.getpixel((1220, 300)), (0, 0, 255))
-            self.assertEqual(inward.getpixel((1220, 300)), (255, 0, 0))
+            self.assertEqual(original.getpixel((730, 300)), (0, 0, 255))
+            self.assertEqual(inward.getpixel((730, 300)), (255, 0, 0))
+            self.assertEqual(original.getpixel((1220, 300)), (255, 0, 0))
+            self.assertEqual(inward.getpixel((1220, 300)), (0, 0, 255))
+            left = Image.new("RGB", (1280, 720))
+            _reaction(left, photo, "left")
+            self.assertEqual(left.getpixel((60, 300)), (0, 0, 255))
+            self.assertEqual(left.getpixel((550, 300)), (255, 0, 0))
+
+    def test_reaction_alpha_is_not_premultiplied_into_dark_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "reaction.png"
+            Image.new("RGBA", (100, 100), (255, 0, 0, 128)).save(photo)
+            layer = Image.new("RGBA", (1280, 720))
+            _reaction(layer, photo)
+            r, _g, _b, alpha = layer.getpixel((900, 300))
+            self.assertEqual(r, 255)
+            self.assertTrue(0 < alpha < 255)
 
     def test_incomplete_image_review_cannot_approve_publication(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,7 +79,7 @@ class ThumbnailTests(unittest.TestCase):
             with Image.open(current[0]["render"]) as final:
                 self.assertEqual(final.getpixel((20, 20)), (255, 0, 0))
                 self.assertEqual(final.getpixel((1000, 20)), (0, 0, 255))
-            _publish_candidates(vod, rows, ai)
+            _publish_candidates(vod, rows)
             self.assertEqual(json.loads((output / "variants.json").read_text())[0]["render"], current[0]["render"])
 
     def test_sunburst_cache_budget_and_usage(self):
@@ -96,7 +110,7 @@ class ThumbnailTests(unittest.TestCase):
                 generate_artwork(ai, root, "A different thumbnail", [template], mask, budget=.2)
             self.assertEqual(client.images.edit.call_count, 1)
 
-    def test_original_photo_and_icons_are_restored_over_generated_art(self):
+    def test_baked_artwork_is_not_covered_by_a_second_photo_or_icon_paste(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             photo, frame, icon, artwork = [root / name for name in ("shocked.png", "frame.jpg", "icon.png", "art.png")]
@@ -107,15 +121,48 @@ class ThumbnailTests(unittest.TestCase):
             concept = {"title": "Mi partida", "headline": "QUÉ LOCURA", "expression": "shocked"}
             direction = {"subject_side": "left", "scene": "Dramatic Rift scene", "asset_positions": [{"x": 450, "y": 490, "size": 140}]}
             ai = AI(root, mock=True)
-            with patch("milloclips.thumbnails.plan_artwork", return_value=direction), patch("milloclips.thumbnails.generate_artwork", return_value=artwork):
-                canvas, metadata = _generated_layout(ai, root, frame, concept, photo, [icon], [], 5)
-            self.assertEqual(canvas.getpixel((200, 300)), (255, 0, 0))
-            self.assertEqual(canvas.getpixel((500, 550)), (0, 128, 0))
+            references = [{"id": str(index), "path": str(frame)} for index in range(3)]
+            with patch("milloclips.thumbnails.plan_artwork", return_value=direction), patch("milloclips.thumbnails.generate_artwork", return_value=artwork) as generate:
+                canvas, metadata = _generated_layout(ai, root, frame, concept, photo, [icon], references, 5)
+            self.assertEqual(generate.call_count, 1)
+            self.assertEqual(len(generate.call_args.args[3]), 4)
+            self.assertEqual(generate.call_args.args[3][-1], photo)
+            self.assertEqual(metadata["reference_ids"], [])
+            self.assertLess(len(generate.call_args.args[2]), 2200)
+            self.assertIn("headline ON TOP", generate.call_args.args[2])
+            self.assertEqual(metadata["composition_mode"], "baked-photo")
+            self.assertTrue(metadata["reaction_mirrored"])
+            self.assertEqual(canvas.getpixel((200, 300)), (0, 0, 255))
+            self.assertEqual(canvas.getpixel((500, 550)), (0, 0, 255))
             self.assertEqual(canvas.getpixel((1000, 300)), (0, 0, 255))
-            self.assertEqual(canvas.getpixel((613, 300)), (255, 255, 255))
+            self.assertEqual(canvas.getpixel((613, 300)), (0, 0, 255))
             with Image.open(metadata["mask"]) as protection:
-                self.assertEqual(protection.getpixel((200, 300))[3], 255)
+                self.assertEqual(protection.getpixel((200, 300))[3], 0)
                 self.assertEqual(protection.getpixel((1000, 300))[3], 0)
+            with Image.open(metadata["template"]) as template:
+                self.assertEqual(template.getpixel((200, 300))[:3], (255, 0, 0))
+
+    def test_baked_revision_keeps_generated_text_over_the_photo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vod = Path(tmp)
+            output = vod / "renders" / "thumbnails"
+            output.mkdir(parents=True)
+            photo, source, artwork = [output / name for name in ("smiling.png", "source.png", "art.png")]
+            Image.new("RGBA", (100, 100), "red").save(photo)
+            Image.new("RGB", (1280, 720), "gray").save(source)
+            Image.new("RGB", (1536, 864), "blue").save(artwork)
+            rows = [{"number": number, "title": "MI PARTIDA", "headline": "UDYR AP", "render": str(source),
+                     "artwork": str(artwork), "reaction_photo": str(photo), "composition_mode": "baked-photo",
+                     "reaction_mirrored": False, "exact_assets": [],
+                     "direction": {"subject_side": "right", "asset_positions": []}} for number in (1, 2, 3)]
+            (output / "variants.json").write_text(json.dumps(rows))
+            with patch("milloclips.thumbnails.generate_artwork", return_value=artwork) as generate:
+                revise_thumbnail(vod, 1, "Keep the headline above the torso", AI(vod, mock=True))
+            current = json.loads((output / "variants.json").read_text())
+            with Image.open(current[0]["render"]) as final:
+                self.assertEqual(final.getpixel((900, 500)), (0, 0, 255))
+            with Image.open(generate.call_args.args[4]) as mask:
+                self.assertIsNone(mask.getchannel("A").getbbox())
 
     def test_direction_rejects_assets_over_the_face(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,15 +236,32 @@ class ThumbnailTests(unittest.TestCase):
             self.assertEqual(len(prompts), 4)
             self.assertTrue(all("Prefer unusual builds" in prompt for prompt in prompts[2:]))
 
-    def test_reaction_rim_covers_straight_clipped_photo_edges(self):
+    def test_reaction_outlines_silhouette_without_outlining_clipped_photo_edges(self):
         with tempfile.TemporaryDirectory() as tmp:
             photo = Path(tmp) / "reaction.png"
             Image.new("RGBA", (100, 100), "red").save(photo)
             for side, rim_x, interior_x in (("right", 667, 675), ("left", 613, 605)):
                 canvas = Image.new("RGB", (1280, 720), "black")
                 _reaction(canvas, photo, side)
-                self.assertEqual(canvas.getpixel((rim_x, 300)), (255, 255, 255))
+                self.assertEqual(canvas.getpixel((rim_x, 300)), (0, 0, 0))
                 self.assertEqual(canvas.getpixel((interior_x, 300)), (255, 0, 0))
+            source = Image.new("RGBA", (100, 100))
+            ImageDraw.Draw(source).ellipse((20, 10, 80, 90), fill="red")
+            source.save(photo)
+            canvas = Image.new("RGB", (1280, 720), "black")
+            _reaction(canvas, photo, crop=[0, 0, 1, 1])
+            self.assertIn((255, 255, 255), {color for _, color in canvas.getcolors(canvas.width * canvas.height)})
+            self.assertEqual(canvas.getpixel((667, 300)), (0, 0, 0))
+
+    def test_contact_sheet_labels_use_complete_wrapped_video_titles(self):
+        title = "CARREO CON UN PICK INESPERADO Y UNA BUILD QUE CAMBIA LA PARTIDA"
+        rows = [{"number": 1, "title": title, "headline": "PICK INESPERADO"}]
+        with patch("milloclips.thumbnails.ImageDraw.ImageDraw.multiline_text") as caption:
+            sheet = _contact_sheet([Image.new("RGB", (480, 270))], rows, 480, 21)
+        text = caption.call_args.args[1]
+        self.assertEqual(" ".join(text.split()), "01 / " + title)
+        self.assertGreater(len(text.splitlines()), 1)
+        self.assertGreater(sheet.height, 350)
 
     def test_audited_natural_copy_is_accepted_and_cached(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,6 +281,27 @@ class ThumbnailTests(unittest.TestCase):
             self.assertEqual(ai.thumbnail_concepts(beats, "", []), concepts)
             self.assertEqual(replies, [])
 
+    def test_concept_json_example_includes_required_reaction_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "smiling.png"
+            Image.new("RGBA", (10, 10), "red").save(photo)
+            ai = AI(Path(tmp), mock=True)
+            ai.mock = False
+            prompts = []
+            concept = {"title": "CARREO CON FIDDLESTICKS SUPPORT", "headline": "FIDDLE SUPPORT",
+                       "hook": "unusual pick/role/challenge", "template": "identity", "expression": "smiling",
+                       "reaction_reason": "A confident smile fits the unusual pick succeeding.",
+                       "beat_id": 7, "evidence": "Fiddlesticks support"}
+            def answer(prompt, *_args, **_kwargs):
+                prompts.append(prompt)
+                return {"concepts": [concept]} if "Create exactly" in prompt else {"reviews": [{"index": 0, "accepted": True}]}
+            ai._json = answer
+            result = ai.thumbnail_concepts([{"id": 7, "text": "Fiddlesticks support gana la pelea"}], "", [],
+                                           reactions=[{"expression": "smiling", "path": str(photo)}])
+            example = next(line for line in prompts[0].splitlines() if line.startswith('{"concepts":'))
+            self.assertIn("reaction_reason", json.loads(example)["concepts"][0])
+            self.assertEqual(result[0]["reaction_reason"], concept["reaction_reason"])
+
     def test_concepts_reject_words_not_grounded_in_their_beat_evidence(self):
         ai = object.__new__(AI)
         ai.mock = False
@@ -229,6 +314,20 @@ class ThumbnailTests(unittest.TestCase):
         beats = [{"id": 7, "type": "COMBAT", "importance": 5,
                   "text": "Fiddlesticks support gana la pelea final", "reason": "Final fight wins the game"}]
         self.assertEqual(ai.thumbnail_concepts(beats, "Fiddlesticks support wins", []), [])
+
+    def test_concepts_accept_evidence_quotes_that_only_join_spoken_words(self):
+        ai = object.__new__(AI)
+        ai.mock = False
+        ai.vod_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ai.vod_dir)
+        ai._json = lambda *_args, **_kwargs: {"concepts": [{
+            "title": "Unshot en Udyr", "headline": "UNSHOT", "hook": "funny mistake/reversal",
+            "template": "action", "expression": "shocked", "beat_id": 7, "evidence": "one shot",
+        }], "reviews": [{"index": 0, "accepted": True, "reason": "Evidenced one-shot elimination."}]}
+        beats = [{"id": 7, "type": "COMBAT", "importance": 5,
+                  "text": "Oh my god que me dio oneshot", "reason": "Eliminada de un golpe"}]
+        concepts = ai.thumbnail_concepts(beats, "Eliminada de un golpe", [])
+        self.assertEqual([concept["headline"] for concept in concepts], ["UNSHOT"])
 
     def test_concepts_reject_titles_not_grounded_in_their_beat_evidence(self):
         ai = object.__new__(AI)
@@ -269,7 +368,7 @@ class ThumbnailTests(unittest.TestCase):
                   "text": "Tristana reset W", "reason": "Visible reset"}]
         self.assertEqual(ai.thumbnail_concepts(beats, "Tristana reset", []), [])
 
-    def test_three_generic_variants_use_only_final_edit_frames(self):
+    def test_two_candidates_use_only_final_edit_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             vod = root / "vod"
@@ -290,10 +389,11 @@ class ThumbnailTests(unittest.TestCase):
             sheet = render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             with Image.open(sheet) as contact:
-                self.assertEqual(contact.size, (1480, 350))
+                self.assertEqual(contact.width, 990)
+                self.assertGreaterEqual(contact.height, 332)
             self.assertEqual(sheet.parent, vod / "renders" / "thumbnails")
             rows = json.loads((sheet.parent / "variants.json").read_text())
-            self.assertEqual(len(rows), 3)
+            self.assertEqual(len(rows), 2)
             self.assertTrue(all(row["beat_id"] in {1, 3} and Path(row["frame"]).exists() for row in rows))
             self.assertTrue((vod / "thumbnail-brief.json").exists())
             self.assertTrue((vod / "renders" / "thumbnail.png").exists())
@@ -303,12 +403,13 @@ class ThumbnailTests(unittest.TestCase):
             render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["winner"], 2)
             with self.assertRaises(ValueError):
-                select_thumbnail(vod, 4)
+                select_thumbnail(vod, 3)
             select_thumbnail(vod, ai=AI(vod, mock=True))
             self.assertTrue((sheet.parent / "selection.raw.json").exists())
             Image.new("RGBA", (80, 80), "blue").save(faces / "shocked.png")
             render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["status"], "pending")
+            self.assertFalse((sheet.parent / "review.raw.json").exists())
             for row in rows:
                 with Image.open(row["render"]) as rendered:
                     self.assertEqual(rendered.size, (1280, 720))

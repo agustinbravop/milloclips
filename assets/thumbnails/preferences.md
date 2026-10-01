@@ -9,13 +9,24 @@ premise or treat candidate numbers as permanent editorial categories.
 - Large, recognizable ElmilloR reaction cutout, one clear game subject, and a
   big, short headline. Inspiration: Thebausffs and Drututt's bold, readable
   gaming-thumbnail approach, with ElmilloR's own identity.
-- Keep the current enlarged reaction scale and white outline, including along
-  straight cropped-photo edges. Faces and expressions must remain legible.
+- Keep the enlarged reaction and white silhouette outline; never outline straight
+  photo-crop boundaries or extend them into dividing lines.
+- Keep cinematic depth and purposeful lighting. Bold, not aggressively chaotic.
+- Use clean white lettering and restrained colored accents. Playful type is a
+  small accent, not the dominant style; avoid ragged, frantic or cartoonish letters.
+- Solid, smooth letter interiors: no particles, speckles, cracks or distressed
+  textures. Keep any subtle supporting light outside the letters.
+- No headline underlines, red laser streaks, glowing highlight bars or light
+  trails beneath/across the text.
+- Other creators' photos are style references for Nano art direction only.
+  Do not send them to the image generator: ElmilloR's original reaction is its
+  sole human identity reference; never blend another creator's facial features.
 - Use strong foreground/background separation and restrained supporting color.
   Contrast should guide attention rather than make every element equally loud.
-- Prefer ElmilloR on the right, flipped horizontally to face inward toward the
-  left-hand headline/action. A left placement needs a specific composition reason
-  and uses the unflipped source. Flipping is done in code, never by generating a face.
+- Source photos face left: on the right keep them unflipped; on the left mirror
+  them to face right. Prefer right placement; always face inward.
+- One reaction only: a single thin silhouette outline, no offset head, ghost copy
+  or human-shaped shadow. Layer background → reaction → headline; text is topmost.
 
 ## Editorial judgment
 
@@ -26,6 +37,8 @@ premise or treat candidate numbers as permanent editorial categories.
   educational hook can work when its value or surprising consequence is clear.
 - Match the reaction to the actual emotion. Excitement, skepticism, confusion,
   amusement, and shock are alternatives, not a fixed mapping from content type.
+- A question is not hype. Pair questioning copy with curiosity or skepticism,
+  never the `overly-hyped` reaction.
 - Inspect the actual available reaction photos and their catalog descriptions.
   Explain the photo's fit to each concept's evidence, headline and emotional promise.
   Closed-eye clenched-fist excitement is not the default for builds or questions.
@@ -49,6 +62,12 @@ premise or treat candidate numbers as permanent editorial categories.
   useful focal point over a wide screen full of unrelated HUD and effects.
 - Use supporting item, rune, or character icons only when they add information.
   Avoid repeating a character badge when the main artwork already identifies it.
+- If an evidenced item/rune explains the hook, show its exact icon; do not let
+  generic champion artwork hide the build's defining detail.
+- Keep champions recognizable and game-faithful; prefer authentic artwork or
+  silhouettes over distorted AI reinterpretations.
+- Prefer removing the desktop microphone from a cleaned real-photo cutout when
+  possible without changing the person. Keep the headset; never synthesize the face.
 - Keep text and eyes unobstructed. Avoid accidental crops through facial features.
 - Decorative shapes, outlines, and effects must improve hierarchy or separation;
   do not add them merely to make candidates look different.
@@ -57,8 +76,30 @@ premise or treat candidate numbers as permanent editorial categories.
 
 - Short, natural Spanish headlines; title and thumbnail should complement each
   other. Avoid literal sentence fragments and keyword soup.
-- Use familiar gaming vocabulary. For the League role, use **support**, not
-  **apoyo**. Do not let this terminology preference dictate the video's subject.
+- Name the hook's concrete subject, mechanic or consequence. Reject generic labels
+  such as “ELECCIÓN INSÓLITA” that could describe unrelated videos.
+- Video titles use FULL CAPS and more context than the short thumbnail headline:
+  a concrete action/claim plus the relevant pick, role, build or stakes.
+- Omit opening Spanish exclamation/question marks (`¡`, `¿`); closing `!`, `?`
+  and `?!` are welcome only when they fit. Keep accents and natural Spanish grammar.
+- Approved title examples: NO SE PUEDE ESTAR MÁS FEDEADO!, CONOCES EL SHEN
+  JUNGLA FULL AP?, SKARNER LETALIDAD ES UNA LOCURA!, PERO QUÉ ES ESTA
+  TEMPORADA?!, FUNDAMENTOS DE LA JUNGLA, HE DESCUBIERTO EL NUEVO META,
+  MI FIDDLESTICKS ES DEMASIADO BUENO, 15 KILLS!, ELISE JUNGLA ESTÁ DE VUELTA!
+- Choose confident claims, unusual builds, questions, educational topics, exact
+  stat hooks or champion comebacks according to the video's evidence. These
+  examples teach packaging, not reusable claims or mandatory title formulas.
+- Exact stats must be verified from the footage. Champion comeback claims need
+  an evidenced return/buff premise; isolated damage numbers do not establish
+  exceptional performance. Never leak production wording such as “final edit”
+  or “final League” into the video title. Titles must be natural Spanish, not
+  grammatical fragments or inflated versions of the thumbnail headline.
+- Title inspiration: Thebausffs and Nemesis, with some Drututt directness. Prefer
+  confident statements; questions are occasional, not the default.
+- Contact-sheet captions show the candidate number and video title, not a repeat
+  of the thumbnail headline.
+- Use familiar gaming vocabulary. For League role, use **support**, not
+  **apoyo/soporte**. Do not let this terminology preference dictate the video's subject.
 
 ## Evaluation
 
@@ -86,8 +127,8 @@ premise or treat candidate numbers as permanent editorial categories.
   mouth, and the important background action; layering can use space efficiently.
 - Cinematic, game-faithful character staging is welcome as illustration. Do not
   invent damage/stat values or present illustrated gameplay as evidence of a play.
-- Unlike the Tenshi reference's generated pose, use ElmilloR's original cutout.
-  His face/body pixels must not be synthesized. Restore exact icons after artwork
-  generation rather than trusting the model to redraw them perfectly.
+- Start from ElmilloR's actual cutout, not an invented likeness or pose. The approved
+  one-call workflow integrates it into the finished image; minor integration changes
+  are acceptable, but verify identity, expression, inward gaze and game-asset fidelity.
 - Typography and supporting effects can be generated. Verify Spanish spelling,
   headline completeness, and feed-size readability before publication.

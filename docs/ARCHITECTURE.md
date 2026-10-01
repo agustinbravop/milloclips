@@ -163,9 +163,12 @@ The thumbnail stage uses approved YouTube examples from
 `assets/thumbnails/references.json` as a cached visual reference library.
 `thumbnail-brief.json` contains three evidence-backed concepts; Nano produces a
 cached narrative art direction and exact foreground-asset placement per concept.
-`gpt-image-2.5-sunburst` edits a masked placement template at 1536x864, generating
-scene artwork, effects and headline treatment. Pillow restores the original
-reaction cutout and official icon layer after resizing to 1280x720. Normalized
+`gpt-image-2.5-sunburst` edits a photo/icon placement template at 1536x864 into a
+finished image in one call per candidate. Style-reference photos stay with Nano;
+the image generator receives only ElmilloR's photo as its human identity reference.
+Pillow resizes to 1280x720 without
+pasting the photo over text; identity and icon fidelity are reviewed, not guaranteed
+pixel-exact. Right-side photos remain unflipped; left-side photos are mirrored. Normalized
 head crops live in `assets/faces/framing.json`.
 
 Paid image requests are content-addressed by settings, prompt, reference bytes
@@ -174,13 +177,14 @@ answers stay under `renders/thumbnails/`. `image-usage.json` tracks actual costs
 or conservative reservations, and image SDK retries are disabled. Mock fixtures
 retain the deterministic renderer without image calls or reference downloads.
 
-Full-size candidates and 280x158 previews receive a Nano comparison stored in
-`review.raw.json`, preserving the raw model judgment alongside conservatively
-validated publication checks. The best candidate can still be unpublishable.
-Selection remains explicit, with human overrides separate from AI decisions.
+Generation renders two candidates, exports candidate 1 and skips the automated
+visual review. The human compares the contact sheet and selects explicitly, so
+human picks in `selection.reviewed.json` survive unchanged rerenders. `--choose-ai`
+still runs the Nano full-size/feed-size comparison on demand and caches the raw
+judgment in `selection.raw.json` with conservatively validated publication checks.
 `--revise` edits one candidate without style-reference images (which can leak
-another creator's face); the whole original photo pane is locked/restored to
-prevent shifted duplicate heads. Corrections and resulting versioned renders
+another creator's face). Baked-photo candidates retain the finished model image;
+legacy pixel-locked candidates retain their original restoration/orientation. Corrections and resulting versioned renders
 are recorded separately in `revisions.reviewed.json`. Matching base-image
 digests preserve revisions across rerenders; changed bases invalidate them.
 
