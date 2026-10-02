@@ -85,7 +85,8 @@ premise or treat candidate numbers as permanent editorial categories.
 - Approved title examples: NO SE PUEDE ESTAR MÁS FEDEADO!, CONOCES EL SHEN
   JUNGLA FULL AP?, SKARNER LETALIDAD ES UNA LOCURA!, PERO QUÉ ES ESTA
   TEMPORADA?!, FUNDAMENTOS DE LA JUNGLA, HE DESCUBIERTO EL NUEVO META,
-  MI FIDDLESTICKS ES DEMASIADO BUENO, 15 KILLS!, ELISE JUNGLA ESTÁ DE VUELTA!
+  MI FIDDLESTICKS ES DEMASIADO BUENO, 15 KILLS!, ELISE JUNGLA ESTÁ DE VUELTA!,
+  ME SAQUE UN FIZZ DE LA GALERA!
 - Choose confident claims, unusual builds, questions, educational topics, exact
   stat hooks or champion comebacks according to the video's evidence. These
   examples teach packaging, not reusable claims or mandatory title formulas.
