@@ -11,68 +11,124 @@ from .fixture import create_fixture
 from .io import read_json, record_run, write_json
 from .kick import print_vods, recent_vods
 from .media import ingest
-from .publish import publish
+from .publish import publish, publish_confirmed
 from .reports import scan_report, shorts_report
 from .scan import scan
 from .thumbnails import prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="milloclips", description="Iteration-zero AI VOD editing pipeline")
+    root = argparse.ArgumentParser(
+        prog="milloclips", description="Turn Kick VODs into a long edit, two shorts, and a thumbnail.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Workflow: vods -> auto -> review outputs -> publish --upload -> publish --confirm-youtube\n"
+               "Run milloclips COMMAND --help for inputs, outputs, defaults, and examples.\n"
+               "Real AI stages require OPENAI_API_KEY in .env. Paths are relative to the current directory.\n"
+               "README.md: quickstart. docs/YOUTUBE.md: Google setup. docs/ARCHITECTURE.md: internals.",
+    )
     commands = root.add_subparsers(dest="command", required=True)
 
-    ingest_parser = commands.add_parser("ingest", help="Download a Kick VOD or register a local media file")
-    ingest_parser.add_argument("source")
-    ingest_parser.add_argument("--root", type=Path, default=Path("workspace"))
+    def command(name: str, summary: str, details: str, examples: str) -> argparse.ArgumentParser:
+        return commands.add_parser(name, help=summary, description=f"{summary}.\n{details}",
+                                   epilog=f"Examples (replace example paths with your own):\n{examples}",
+                                   formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    auto = commands.add_parser("auto", help="Run a VOD through analysis, editing, and rendering")
+    ingest_parser = command("ingest", "Download a Kick VOD or register a local video",
+        "Creates a cached source, metadata, and manifest.json; prints the VOD workspace.\n"
+        "Kick URLs require network access; local files require no AI key.",
+        "  uv run milloclips ingest https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee-746f6398ad8e\n"
+        "  uv run milloclips ingest /path/to/video.mp4")
+    ingest_parser.add_argument("source", help="Kick VOD URL or existing local video file")
+    ingest_parser.add_argument("--root", type=Path, default=Path("workspace"), help="Parent of VOD workspaces (default: workspace)")
+
+    auto = command("auto", "Generate or resume all outputs for one VOD",
+        "Requires OPENAI_API_KEY. Scans and ranks all games for the long edit;\n"
+        "selects shorts within the winning game. Writes auto-summary.json in the VOD workspace.\n"
+        "The selected_game field identifies the edit directory under game-analyses/.\n"
+        "Reuses matching analysis caches; never uploads or publishes.",
+        "  uv run milloclips auto https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee-746f6398ad8e\n"
+        "  uv run milloclips auto workspace/VOD")
     auto.add_argument("source", help="Kick URL, local video, or existing VOD workspace")
-    auto.add_argument("--root", type=Path, default=Path("workspace"))
-    auto.add_argument("--force", action="store_true")
-    auto.add_argument("--model", default="gpt-5-nano")
-    auto.add_argument("--editorial-model")
+    auto.add_argument("--root", type=Path, default=Path("workspace"), help="Workspace parent for new inputs; ignored for an existing workspace (default: workspace)")
+    auto.add_argument("--force", action="store_true", help="Refresh analysis, ranking, edit plans, and thumbnail concepts; reuse downloaded media, matching transcripts, and unchanged paid images")
+    auto.add_argument("--model", default="gpt-5-nano", help="Frame/beat analysis model (default: gpt-5-nano)")
+    auto.add_argument("--editorial-model", help="Ranking, editing, and thumbnail decisions model (default: --model)")
 
-    vods = commands.add_parser("vods", help="List recent Kick VODs without downloading them")
-    vods.add_argument("channel", nargs="?", default="elmiillor")
-    vods.add_argument("--limit", type=int, default=10)
-    vods.add_argument("--league-only", action="store_true")
+    vods = command("vods", "List available Kick VODs without downloading media",
+        "Queries Kick; prints dates, durations, titles, and URLs. No AI key required.\n"
+        "--limit applies after the optional League-category filter.",
+        "  uv run milloclips vods --league-only --limit 1000")
+    vods.add_argument("channel", nargs="?", default="elmiillor", help="Kick channel name (default: elmiillor)")
+    vods.add_argument("--limit", type=int, default=10, help="Maximum returned VODs; raise for a full batch (default: 10)")
+    vods.add_argument("--league-only", action="store_true", help="Include only VODs categorized as League of Legends")
 
-    for name, help_text in [
-        ("scan", "Detect League games and generate the scanner report"),
-        ("analyze", "Transcribe and classify beats in the selected game"),
-        ("plan-long", "Create a duration-constrained horizontal edit plan"),
-        ("find-shorts", "Find and report vertical short candidates"),
+    for name, summary, details, directory_help, force_help, example in [
+        ("scan", "Detect League games and generate a review report",
+         "Requires ingest first. Uses AI frame analysis; writes games.json,\nstream-states.json, and reports/scan-report.html. Does not select a winner.",
+         "Source VOD workspace containing manifest.json",
+         "Repeat scan analysis and frame sampling; keep downloaded source",
+         "workspace/VOD"),
+        ("analyze", "Transcribe and classify the selected game's moments",
+         "Requires scan plus select, or a selected game workspace created by auto.\nUses AI transcription/classification; writes transcript.json, beats.json, and layout.json.",
+         "Workspace with manifest.json, games.json, and selection.json",
+         "Reclassify moments; reuse matching transcripts and sampled frames",
+         "workspace/VOD/game-analyses/game-001"),
+        ("plan-long", "Plan a duration-constrained long edit",
+         "Requires analyze in this directory. Uses AI editorial decisions;\nwrites long-plan.json and boundary/review artifacts. Does not render video.",
+         "Selected edit workspace containing beats.json",
+         "Refresh editorial selection and cut decisions; reuse media and transcripts",
+         "workspace/VOD/game-analyses/game-001"),
+        ("find-shorts", "Find and judge shorts within the selected game",
+         "Requires analyze first. Uses AI; writes short-candidates.json and\nreports/short-candidates.html. Does not render videos.",
+         "Selected game workspace containing beats.json",
+         "Refresh short discovery and editorial decisions; reuse media and matching transcripts",
+         "workspace/VOD/game-analyses/game-001"),
     ]:
-        command = commands.add_parser(name, help=help_text)
-        command.add_argument("vod_dir", type=Path)
-        command.add_argument("--mock", action="store_true")
-        command.add_argument("--force", action="store_true")
-        command.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
-        command.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
+        stage_parser = command(name, summary, details + "\nRequires OPENAI_API_KEY unless --mock is used.",
+                               f"  uv run milloclips {name} {example}")
+        stage_parser.add_argument("vod_dir", type=Path, help=directory_help)
+        stage_parser.add_argument("--mock", action="store_true", help="Use fixture AI replies without an API key; local media processing still runs")
+        stage_parser.add_argument("--force", action="store_true", help=force_help)
+        stage_parser.add_argument("--model", default="gpt-5-nano", help="Frame/beat analysis model (default: gpt-5-nano)")
+        stage_parser.add_argument("--editorial-model", help="Ranking/editing decisions model (default: --model)")
 
-    select = commands.add_parser("select", help="Select a detected game")
-    select.add_argument("vod_dir", type=Path)
-    select.add_argument("game_id")
+    select = command("select", "Manually select a detected game",
+        "Requires scan first. Writes selection.json; prints the selected id.\nUse an id from games.json or the scan report. No AI calls or rendering.",
+        "  uv run milloclips select workspace/VOD game-001")
+    select.add_argument("vod_dir", type=Path, help="VOD workspace containing games.json")
+    select.add_argument("game_id", help="Detected game id, e.g. game-001; not a numeric index")
 
-    long_render = commands.add_parser("render-long", help="Render the horizontal rough cut")
-    long_render.add_argument("vod_dir", type=Path)
+    long_render = command("render-long", "Render the 1280x720 long edit with audio and cards",
+        "Requires a current long-plan.json from plan-long and the local source.\nWrites renders/long-rough.mp4 and the transition reel.\nChecks dimensions, duration, and audio. No AI calls.",
+        "  uv run milloclips render-long workspace/VOD/game-analyses/game-001")
+    long_render.add_argument("vod_dir", type=Path, help="Selected edit workspace containing long-plan.json")
 
-    long_review = commands.add_parser("review-long", help="Render a short reel of every long-form transition")
-    long_review.add_argument("vod_dir", type=Path)
+    long_review = command("render-long-review", "Render a reel of the long edit's transitions",
+        "Requires renders/long-rough.mp4 and its long-plan.json. Writes\nrenders/long-transitions.mp4 and long-review.json, with eight seconds around\neach join. This creates review material; it does not approve the video. No AI calls.",
+        "  uv run milloclips render-long-review workspace/VOD/game-analyses/game-001")
+    long_review.add_argument("vod_dir", type=Path, help="Edit workspace containing the rendered long video and its plan")
 
-    short_render = commands.add_parser("render-short", help="Render a vertical short")
-    short_render.add_argument("vod_dir", type=Path)
-    short_render.add_argument("--candidate", type=int, default=0)
+    short_render = command("render-short", "Render one selected short at 1080x1920 with captions",
+        "Requires find-shorts first and the local source. Writes renders/short-NN.mp4,\nits validation sidecar, and a refreshed short report.\n--candidate-index is zero-based: 0 is the first selected short, usually short-v8-01.\nUses original transcript words. No AI calls.",
+        "  uv run milloclips render-short workspace/VOD/game-analyses/game-001 --candidate-index 0\n"
+        "  uv run milloclips render-short workspace/VOD/game-analyses/game-001 --candidate-index 1")
+    short_render.add_argument("vod_dir", type=Path, help="Output workspace containing short-candidates.json")
+    short_render.add_argument("--candidate-index", type=int, default=0, help="Zero-based selected candidate index; 0 = first, 1 = second (default: 0)")
 
-    render_all_shorts = commands.add_parser("render-shorts", help="Render every passing vertical short")
-    render_all_shorts.add_argument("vod_dir", type=Path)
+    render_all_shorts = command("render-shorts", "Render all selected shorts with captions",
+        "Requires find-shorts first. Writes validated renders/short-NN.mp4 files\nand refreshes the short report. Uses original transcript words. No AI calls or uploads.",
+        "  uv run milloclips render-shorts workspace/VOD/game-analyses/game-001")
+    render_all_shorts.add_argument("vod_dir", type=Path, help="Output workspace containing short-candidates.json")
 
-    thumbnails = commands.add_parser("thumbnails", help="Generate two evidence-backed thumbnail candidates and a contact sheet")
-    thumbnails.add_argument("vod_dir", type=Path)
-    thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"))
-    thumbnails.add_argument("--force", action="store_true")
+    thumbnails = command("thumbnails", "Generate, choose, or revise a long-video thumbnail",
+        "Generation requires the long plan, beats, face assets, and OPENAI_API_KEY.\nWrites renders/thumbnails/ candidates/contact sheet and renders/thumbnail.png.\nCandidate 1 is provisional until chosen. --choose is local; --choose-ai uses AI;\n--revise makes a paid image edit. --feedback only saves notes; --prepare-references\nonly downloads reference thumbnails. Original artwork and reviewed edits stay separate.",
+        "  uv run milloclips thumbnails workspace/VOD/game-analyses/game-001\n"
+        "  uv run milloclips thumbnails workspace/VOD/game-analyses/game-001 --choose 2")
+    thumbnails.add_argument("vod_dir", type=Path, help="Selected edit workspace; --prepare-references still requires this positional path")
+    thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"), help="Reusable reaction photos and framing metadata (default: assets/faces)")
+    thumbnails.add_argument("--force", action="store_true", help="Refresh concepts; reuse downloaded references/assets and unchanged paid image requests")
     choice = thumbnails.add_mutually_exclusive_group()
-    choice.add_argument("--choose", type=int, choices=(1, 2, 3), help="Select an existing candidate without regenerating")
+    choice.add_argument("--choose", type=int, choices=(1, 2, 3), help="Choose an existing candidate number (one-based); no AI or regeneration")
     choice.add_argument("--choose-ai", action="store_true", help="Compare existing candidates with AI and select a winner")
     choice.add_argument("--feedback", help="Save human thumbnail feedback; does not render")
     choice.add_argument("--prepare-references", action="store_true", help="Cache the channel reference thumbnails without calling AI")
@@ -80,25 +136,53 @@ def parser() -> argparse.ArgumentParser:
     thumbnails.add_argument("--edit", help="Targeted image-edit instruction, used with --revise")
     thumbnails.add_argument("--headline", help="Optional reviewed replacement headline, used with --revise")
     thumbnails.add_argument("--feedback-scope", choices=("channel", "video"), default="channel",
-                            help="Apply feedback across videos (default) or only this VOD workspace")
-    thumbnails.add_argument("--mock", action="store_true")
-    thumbnails.add_argument("--image-budget", type=float, default=5, help="Cumulative image-generation spend/reservation limit for this workspace, in USD")
-    thumbnails.add_argument("--model", default="gpt-5-nano", help="Model for frame and beat analysis")
-    thumbnails.add_argument("--editorial-model", help="Model for long-form, short, and thumbnail editorial decisions")
+                            help="Scope of --feedback: all videos or this edit workspace (default: channel)")
+    thumbnails.add_argument("--mock", action="store_true", help="Generate fixture thumbnails without AI calls or reference downloads")
+    thumbnails.add_argument("--image-budget", type=float, default=5, help="Cumulative image spend/reservation ceiling in USD, not a provider billing cap (default: 5)")
+    thumbnails.add_argument("--model", default="gpt-5-nano", help="Frame/beat analysis model (default: gpt-5-nano)")
+    thumbnails.add_argument("--editorial-model", help="Thumbnail concept/art-direction model; not the image generator (default: --model)")
 
-    publish_parser = commands.add_parser("publish", help="Publish a rendered VOD into the static website catalog")
-    publish_parser.add_argument("vod_dir", type=Path)
-    publish_parser.add_argument("--site", type=Path, default=Path("website"))
-    publish_parser.add_argument("--approve", action="store_true", help="Required; confirms this render is ready to go public")
-    publish_parser.add_argument("--youtube", help="Publish the long form as a YouTube video id instead of a local file")
-    publish_parser.add_argument("--slug", help="Asset basename; defaults to a slug of the generated thumbnail title")
-    publish_parser.add_argument("--vod-id", help="Catalog VOD id when the manifest cannot be matched by its Kick URL")
+    publish_parser = command("publish", "Upload a reviewed clip or update the gallery",
+        "Input: VOD/game-analyses/SELECTED_GAME, identified in auto-summary.json. All modes require --approve.\n"
+        "Modes:\n"
+        "  No action flag: publish all available local clips to SITE/static/catalog.json.\n"
+        "    Requires a matching catalog entry and validated renders; replaces its clip records.\n"
+        "  --upload --clip NAME: upload one video/title to YouTube; attach a thumbnail for long.\n"
+        "    Requires youtube-auth and reviewed renders. Saves youtube/NAME.json; no gallery change.\n"
+        "    Requests Unlisted; unaudited API projects may force Private. Retry the same command to resume.\n"
+        "  --confirm-youtube --clip NAME: after checking signed-out playback, verify Unlisted,\n"
+        "    processing, and embedding; link the saved upload in the gallery, preserving other clips.\n"
+        "YouTube modes call the API. Local mode does not. Gallery changes need a separate site deploy.\n"
+        "Run uploads serially; set Private -> Unlisted in Studio if needed. Setup: docs/YOUTUBE.md.",
+        "  uv run milloclips publish workspace/VOD/game-analyses/game-001 --upload --clip short-v8-01 --approve\n"
+        "  uv run milloclips publish workspace/VOD/game-analyses/game-001 --confirm-youtube --clip short-v8-01 --approve")
+    publish_parser.add_argument("vod_dir", type=Path, help="Reviewed edit workspace containing renders and manifest.json")
+    publish_parser.add_argument("--site", type=Path, default=Path("website"), help="Gallery app directory; unused during --upload (default: website)")
+    publish_parser.add_argument("--approve", action="store_true", help="Required: you reviewed the output; with --confirm-youtube, you checked Unlisted playback. Does not change visibility or ask YouTube for approval")
+    publish_parser.add_argument("--youtube", help="Local-gallery mode only: use an existing long-video id instead of a local file; does not upload or verify visibility")
+    publish_parser.add_argument("--slug", help="Local-gallery asset basename (default: generated thumbnail title slug); not allowed with YouTube actions")
+    publish_parser.add_argument("--vod-id", help="Catalog VOD id override when the manifest Kick URL cannot match an entry; unused during --upload")
+    youtube_action = publish_parser.add_mutually_exclusive_group()
+    youtube_action.add_argument("--upload", action="store_true", help="Upload one reviewed clip to YouTube; does not change the gallery")
+    youtube_action.add_argument("--confirm-youtube", action="store_true", help="Check Unlisted processing and link one saved upload to the gallery")
+    publish_parser.add_argument("--clip", help="Required with YouTube actions: long or a short's render basename, e.g. short-v8-01; not a candidate index. YouTube automatically classifies eligible vertical videos as Shorts")
+    publish_parser.add_argument("--auth-dir", type=Path, default=Path(".youtube"), help="Saved Google OAuth credentials; YouTube modes only (default: .youtube)")
 
-    fixture = commands.add_parser("fixture", help="Run a synthetic Iteration 0 pipeline without an API key")
-    fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"))
-    fixture.add_argument("--seconds", type=int, default=1200)
-    fixture.add_argument("--render", action="store_true")
-    fixture.add_argument("--force", action="store_true")
+    auth = command("youtube-auth", "Authorize your personal YouTube channel",
+        "Requires YouTube Data API enabled and a Desktop app OAuth client JSON.\nOpens a browser with a localhost callback, verifies the selected channel,\nand saves credentials locally. Does not upload. Setup: docs/YOUTUBE.md.",
+        "  uv run milloclips youtube-auth --client-secrets .youtube/client_secret.json")
+    auth.add_argument("--client-secrets", type=Path, required=True, help="Google Cloud desktop OAuth client JSON")
+    auth.add_argument("--auth-dir", type=Path, default=Path(".youtube"), help="Credential storage; gitignored at the default location (default: .youtube)")
+    auth.add_argument("--channel", default="@agustinbravop", help="Expected channel handle or id; rejects the wrong channel (default: @agustinbravop)")
+
+    fixture = command("fixture", "Run the synthetic editing fixture without an API key",
+        "Creates or reuses synthetic local media; mocks scanning, analysis, long planning,\nand selected-game shorts discovery. Prints report paths and the fixture workspace.\nDoes not exercise real model quality, whole-VOD ranking, thumbnails, or uploads.",
+        "  uv run milloclips fixture\n"
+        "  uv run milloclips fixture --root /tmp/milloclips-fixture --render")
+    fixture.add_argument("--root", type=Path, default=Path("/tmp/milloclips-fixture"), help="Fixture media/workspace directory (default: /tmp/milloclips-fixture)")
+    fixture.add_argument("--seconds", type=int, default=1200, help="Synthetic source duration in seconds; ignored if source exists (default: 1200)")
+    fixture.add_argument("--render", action="store_true", help="Also render the long video and selected shorts with FFmpeg")
+    fixture.add_argument("--force", action="store_true", help="Refresh fixture analysis and edit decisions; reuse the synthetic source")
     return root
 
 
@@ -114,8 +198,29 @@ def main() -> None:
         print(ingest(arguments.source, arguments.root))
         return
     if arguments.command == "publish":
+        if arguments.upload or arguments.confirm_youtube:
+            if not arguments.clip:
+                raise SystemExit("--upload and --confirm-youtube require --clip long|short-01|short-02")
+            if arguments.youtube or arguments.slug:
+                raise SystemExit("--youtube and --slug cannot be combined with individual YouTube publishing")
+            from .youtube import confirm_video, upload_video
+            if arguments.upload:
+                state = upload_video(arguments.vod_dir, arguments.clip, arguments.auth_dir, arguments.approve)
+                print(state["url"])
+                print("Check processing/playback and set Unlisted in Studio if needed; then run --confirm-youtube for this clip.")
+            else:
+                state = confirm_video(arguments.vod_dir, arguments.clip, arguments.auth_dir, arguments.approve)
+                print(publish_confirmed(arguments.vod_dir, arguments.site, state, arguments.vod_id))
+            return
+        if arguments.clip:
+            raise SystemExit("--clip requires --upload or --confirm-youtube")
         print(publish(arguments.vod_dir, arguments.site, arguments.approve,
                       arguments.youtube, arguments.slug, arguments.vod_id))
+        return
+    if arguments.command == "youtube-auth":
+        from .youtube import authorize
+        channel = authorize(arguments.client_secrets, arguments.auth_dir, arguments.channel)
+        print(f"Authorized {channel['handle'] or channel['id']} ({channel['id']})")
         return
     if arguments.command == "auto":
         source_path = Path(arguments.source).expanduser()
@@ -154,7 +259,7 @@ def main() -> None:
         long_video = render_long(winner_dir)
         record_run(winner_dir, "render-long")
         transition_reel = winner_dir / "renders" / "long-transitions.mp4"
-        record_run(winner_dir, "review-long")
+        record_run(winner_dir, "render-long-review")
         candidates = find_shorts(winner_dir, game_ai, force=arguments.force)
         record_run(winner_dir, "find-shorts", model=f"{game_ai.model}+{game_ai.editorial_model}")
         shorts = render_shorts(winner_dir)
@@ -206,12 +311,12 @@ def main() -> None:
         print(render_long(vod_dir))
         record_run(vod_dir, "render-long")
         return
-    if arguments.command == "review-long":
+    if arguments.command == "render-long-review":
         print(render_long_review(vod_dir))
-        record_run(vod_dir, "review-long")
+        record_run(vod_dir, "render-long-review")
         return
     if arguments.command == "render-short":
-        print(render_short(vod_dir, arguments.candidate))
+        print(render_short(vod_dir, arguments.candidate_index))
         record_run(vod_dir, "render-short")
         shorts_report(vod_dir)
         return

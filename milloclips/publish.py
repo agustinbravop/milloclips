@@ -152,3 +152,40 @@ def publish(vod_dir: Path, site: Path, approve: bool, youtube: str | None = None
     catalog["generatedAt"] = datetime.now(UTC).strftime("%Y-%m-%d")
     write_json(catalog_path, catalog)
     return catalog_path
+
+
+def publish_confirmed(vod_dir: Path, site: Path, state: dict, vod_id: str | None = None) -> Path:
+    if not state.get("confirmed") or state.get("privacy") != "unlisted":
+        raise SystemExit("Only confirmed Unlisted uploads can be linked to the gallery.")
+    artifact = state["artifact"]
+    name = re.sub(r"^short-v\d+-", "short-", artifact["clip"])
+    catalog_path = site / "static" / "catalog.json"
+    catalog = read_json(catalog_path)
+    manifest = read_json(vod_dir / "manifest.json")
+    vod = match_vod(catalog, kick_path_id((manifest.get("metadata") or {}).get("input")), vod_id)
+    if vod is None:
+        raise SystemExit("No matching catalog VOD; run catalog-sync or pass --vod-id.")
+    # Catalog-id basenames stay stable when titles change and cannot collide across VODs.
+    basename = slugify(f"{vod['id']}-{name}")
+    image = site / "static" / "images" / f"{basename}.jpg"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    if name == "long":
+        shutil.copy2(vod_dir / "youtube" / "long-thumbnail.jpg", image)
+    else:
+        _poster(Path(artifact["path"]), image)
+    clip = {"id": f"{vod['id']}-{name}", "title": artifact["title"], "poster": f"/images/{image.name}",
+            "duration": artifact["duration"], "width": artifact["width"], "height": artifact["height"],
+            "video": {"provider": "youtube", "src": state["video_id"]}}
+    if name == "long":
+        vod["long"] = clip
+    else:
+        shorts = vod.setdefault("shorts", [])
+        index = next((index for index, item in enumerate(shorts) if item["id"] == clip["id"]), None)
+        if index is None:
+            shorts.append(clip)
+        else:
+            shorts[index] = clip
+    vod.pop("pendingReason", None)
+    catalog["generatedAt"] = datetime.now(UTC).strftime("%Y-%m-%d")
+    write_json(catalog_path, catalog)
+    return catalog_path

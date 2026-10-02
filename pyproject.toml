@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Cheap, iterative AI editing pipeline for League of Legends VODs"
 requires-python = ">=3.12"
 dependencies = [
+  "google-auth-oauthlib>=1.2.0",
   "imageio-ffmpeg>=0.6.0",
   "openai>=2.0.0",
   "pillow>=11",

@@ -6,7 +6,8 @@ from PIL import Image
 
 from milloclips.io import read_json, write_json
 from milloclips.media import run_ffmpeg
-from milloclips.publish import kick_path_id, match_vod, publish, slugify, thumbnail_selection
+from milloclips.publish import kick_path_id, match_vod, publish, publish_confirmed, slugify, thumbnail_selection
+from unittest.mock import patch
 
 
 KICK_URL = "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443"
@@ -70,6 +71,59 @@ class PublishHelpersTests(unittest.TestCase):
 
 
 class PublishTests(unittest.TestCase):
+    def test_confirmed_individual_upload_preserves_siblings_and_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            site, vod_dir = root / "website", root / "vod"
+            vod_dir.mkdir()
+            catalog_path = _write_catalog(site)
+            _write_workspace(vod_dir)
+            catalog = read_json(catalog_path)
+            vod = catalog["vods"][0]
+            vod["long"] = {"id": "existing-long", "video": {"provider": "youtube", "src": "long-id"}}
+            sibling = {"id": f"{vod['id']}-short-02", "video": {"provider": "youtube", "src": "sibling-id"}}
+            vod["shorts"] = [sibling]
+            write_json(catalog_path, catalog)
+            state = {"confirmed": True, "privacy": "unlisted", "video_id": "short-id", "artifact": {
+                "clip": "short-01", "path": "unused.mp4", "title": "Generated short", "duration": 30,
+                "width": 1080, "height": 1920}}
+            def poster(video, destination):
+                destination.write_bytes(b"poster")
+            with patch("milloclips.publish._poster", side_effect=poster):
+                publish_confirmed(vod_dir, site, state)
+                state["artifact"]["clip"] = "short-v8-01"
+                publish_confirmed(vod_dir, site, state)
+            updated = read_json(catalog_path)["vods"][0]
+            self.assertEqual(updated["long"], vod["long"])
+            self.assertEqual(updated["shorts"][0], sibling)
+            self.assertEqual(len(updated["shorts"]), 2)
+            self.assertEqual(updated["shorts"][1]["video"], {"provider": "youtube", "src": "short-id"})
+            self.assertNotIn("pendingReason", updated)
+
+    def test_confirmed_long_uses_uploaded_thumbnail_and_preserves_shorts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            site, vod_dir = root / "website", root / "vod"
+            vod_dir.mkdir()
+            catalog_path = _write_catalog(site)
+            _write_workspace(vod_dir)
+            catalog = read_json(catalog_path)
+            catalog["vods"][0]["shorts"] = [{"id": "existing-short"}]
+            write_json(catalog_path, catalog)
+            (vod_dir / "youtube").mkdir()
+            Image.new("RGB", (1280, 720)).save(vod_dir / "youtube" / "long-thumbnail.jpg")
+            state = {"confirmed": True, "privacy": "unlisted", "video_id": "long-id", "artifact": {
+                "clip": "long", "title": "Generated title", "duration": 600, "width": 1280, "height": 720}}
+            publish_confirmed(vod_dir, site, state)
+            updated = read_json(catalog_path)["vods"][0]
+            self.assertEqual(updated["long"]["title"], "Generated title")
+            self.assertEqual(updated["long"]["video"], {"provider": "youtube", "src": "long-id"})
+            self.assertEqual(updated["shorts"], [{"id": "existing-short"}])
+
+    def test_gallery_rejects_unconfirmed_upload(self):
+        with self.assertRaisesRegex(SystemExit, "confirmed Unlisted"):
+            publish_confirmed(Path("unused"), Path("unused"), {"privacy": "private"})
+
     def test_requires_approval(self):
         with TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit):

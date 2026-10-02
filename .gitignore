@@ -1,5 +1,7 @@
 .venv/
 .env
+.youtube/
+client_secret*.json
 __pycache__/
 *.pyc
 workspace/

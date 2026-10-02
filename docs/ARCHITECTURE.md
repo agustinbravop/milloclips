@@ -3,23 +3,42 @@
 ## Flow
 
 ```text
-VOD -> sparse frames -> stream states -> detected games -> reviewed games
-                                                    |
-                                  selected game -> transcript -> beats
-                                                    |          |
-                                              long plan    short candidates
-                                                    |          |
-                                             horizontal     vertical
+VOD -> scan -> detected games -> analyze every game -> rank -> long plan -> long edit
+ |                                                                  -> thumbnail
+ +-> winning game's evidence -> short decisions -> vertical edits
+                                                                    |
+                                            review -> YouTube upload -> Unlisted check
+                                                                    -> gallery link
 ```
 
-The CLI stages map directly to future background jobs. JSON artifacts are the
-contracts; the eventual website should consume them rather than contain media
-logic.
+JSON artifacts connect the stages. `auto` generates outputs; publishing is a
+separate operator action. The SvelteKit gallery reads `website/static/catalog.json`.
+For command usage, run `uv run milloclips COMMAND --help`.
 
-## VOD Workspace
+## Workspaces
 
 ```text
 workspace/<vod-id>/
+  manifest.json            source metadata and local media path
+  stream-states.json       scan classifications
+  games.json               detected game boundaries
+  games.reviewed.json      optional corrected boundaries
+  selection.json           long-form winner
+  game-ranking.json        cached all-game comparison
+  auto-summary.json        output paths; selected_game identifies the edit directory
+  game-analyses/<game-id>/  isolated game analysis and selected edit outputs
+```
+
+`auto` analyzes and ranks all detected games, selects the long-form winner,
+then creates the long edit, thumbnail, and shorts within that game.
+
+### Edit-stage artifacts
+
+Standalone stages can also write these into the original VOD workspace. In an
+`auto` run, they live in `game-analyses/<selected-game>/`.
+
+```text
+<edit-workspace>/
   manifest.json            immutable source metadata
   frames/                  cached analysis frames
   stream-states.json       raw timestamp classifications
@@ -62,6 +81,8 @@ workspace/<vod-id>/
   reports/                 static review HTML
   renders/                 rough MP4 outputs
   usage.jsonl              model usage and estimated cost inputs
+  youtube/<clip>.json      saved upload/session, video URL, confirmation
+  youtube/long-thumbnail.jpg uploaded long-video poster
 ```
 
 ## Models
@@ -70,9 +91,27 @@ Game discovery, beat classification, and the current short-pipeline iteration
 default to `gpt-5-nano`. Stronger short models are deferred until the pipeline
 behavior is stable enough for a reviewed comparison. `whisper-1` supplies word
 timestamps. Model names are configuration, never embedded in artifact logic.
-Luna and Terra are later candidates for perception and global story planning.
 `milloclips/league_glossary.json` is the shared League vocabulary source.
 Per-VOD terms take priority when building Whisper's size-limited prompt.
+
+## Cache and reviewed corrections
+
+Matching stage artifacts are reused. Editorial changes do not redownload
+the source or invalidate matching transcripts. `--force` is stage-specific:
+scan resamples frames; analysis refreshes classifications; planning refreshes
+editorial choices; thumbnails refreshes concepts while reusing unchanged paid artwork.
+
+Raw model answers and reviewed corrections remain separate. Long-cut corrections
+use `cuts_version: 2`, the raw file's input metadata, and entries shaped as:
+
+```json
+{"raw_signature": "<fingerprint of raw scene answer>", "decision": {"segments": []}}
+```
+
+The full decision also carries the original anchors, evidence, context flags, and
+optional cold-open fields. Stale overrides fail explicitly. Existing v15 plans
+upgrade through `plan-long` to the v16 intro contract; v14 plans also require
+boundary regeneration. Boundary policy v3 preserves media and game transcripts.
 
 ## Editing Rules
 
@@ -177,6 +216,16 @@ answers stay under `renders/thumbnails/`. `image-usage.json` tracks actual costs
 or conservative reservations, and image SDK retries are disabled. Mock fixtures
 retain the deterministic renderer without image calls or reference downloads.
 
+The contact sheet and 280x158 feed previews remain under `renders/thumbnails/`.
+The default cumulative image budget is $5 per workspace, using actual reported
+costs or a conservative $1.20 reservation per unknown/unmetered request. This is
+an admission estimate, not a provider billing cap; Nano calls are logged separately.
+
+Channel-wide style lives in `assets/thumbnails/preferences.md`; per-video judgments
+live in `thumbnail-feedback.reviewed.md`. Feedback changes concept/art-direction
+inputs, not cached media. Four reusable reaction photos use `assets/faces/framing.json`.
+Source faces point left: right placement is unflipped; left placement is mirrored.
+
 Generation renders two candidates, exports candidate 1 and skips the automated
 visual review. The human compares the contact sheet and selects explicitly, so
 human picks in `selection.reviewed.json` survive unchanged rerenders. `--choose-ai`
@@ -188,6 +237,12 @@ legacy pixel-locked candidates retain their original restoration/orientation. Co
 are recorded separately in `revisions.reviewed.json`. Matching base-image
 digests preserve revisions across rerenders; changed bases invalidate them.
 
+`selection.json` is the effective thumbnail choice. Candidate 1 is provisional
+until chosen; local picks live in `selection.reviewed.json`. Choosing a candidate
+does not regenerate images. Concept evidence/copy audits stop real runs if fewer
+than two concepts pass. Optional AI selection records `publishable` and
+`next_changes`; winning a comparison does not imply the artwork is ready to publish.
+
 FFmpeg seeks five seconds before each selected scene to decode reference frames,
 then trims video and audio explicitly to the approved source interval. Boundary
 sampling uses the same pre-roll and stores presentation times before resetting
@@ -196,3 +251,17 @@ It then handles deterministic cuts,
 reusable-card animation, and vertical composition. Iteration 1 uses
 ASS/libass for active-word captions without adding a rendering stack. Add
 Remotion only when motion graphics need animation that ASS cannot express.
+
+## Gallery publishing
+
+Local `publish` validates renders, stages media as hardlinks (copy fallback),
+copies the thumbnail and short poster frames, and replaces that VOD's clip records.
+It uses the chosen/provisional thumbnail title for long form and candidate titles
+for shorts. `--youtube ID` substitutes an existing long-video embed without a
+network visibility check.
+
+Individual YouTube uploads save progress but leave the gallery untouched.
+`publish --confirm-youtube` verifies the saved upload's channel, Unlisted status,
+completed processing, and embedding before updating one clip and its poster;
+sibling clips are preserved. Gallery changes are local until the website is deployed.
+Account setup and recovery are documented in [YOUTUBE.md](YOUTUBE.md).
