@@ -43,8 +43,8 @@ YouTube API upload compliance audit are separate processes.
 
 ## First real test: one reviewed long video
 
-Use `workspace/<vod-id>/game-analyses/<selected_game>`, using the
-**selected_game** field in `auto-summary.json`.
+Use the selected edit directory: `auto-summary.json`'s **workspace** field,
+usually `workspace/<vod-id>/game-analyses/<selected-game>`.
 
 ```bash
 uv run milloclips publish "<edit-directory>" --upload --clip long --approve
@@ -86,13 +86,13 @@ its usual workflow to make the catalog update live.
 
 ## Individual shorts
 
-Choose a validated render by its basename (`short-v8-01`, `short-v8-02`, etc.), **not**
+Choose a validated render by its basename (`short-01`, `short-02`, etc.), **not**
 the zero-based candidate index used by `render-short`:
 
 ```bash
-uv run milloclips publish "<edit-directory>" --upload --clip short-v8-01 --approve
+uv run milloclips publish "<edit-directory>" --upload --clip short-01 --approve
 # Check Unlisted visibility and signed-out playback in Studio.
-uv run milloclips publish "<edit-directory>" --confirm-youtube --clip short-v8-01 --approve
+uv run milloclips publish "<edit-directory>" --confirm-youtube --clip short-01 --approve
 ```
 
 The title comes from that short's pipeline candidate. Shorts need a current
@@ -125,8 +125,11 @@ to long videos. Confirming one output preserves the VOD's other gallery clips.
 The default auth directory is `.youtube`; `--auth-dir` can override it for auth,
 upload and confirmation. Keep any alternative credential location outside git.
 Use `--site` and `--vod-id` on confirmation if the gallery is elsewhere or the
-manifest's Kick URL cannot identify its catalog entry. The source VOD must already
-have an entry in the gallery's `static/catalog.json`.
+manifest's Kick URL cannot identify its catalog entry. If needed, first run:
+
+```bash
+uv run milloclips catalog-sync --since 2026-09-17 --until 2026-10-01
+```
 
 The older `publish <edit-directory> --approve` command still publishes local
 files for the whole VOD. Use the individual `--confirm-youtube` workflow for

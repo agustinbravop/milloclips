@@ -5,7 +5,7 @@
 ```text
 VOD -> scan -> detected games -> analyze every game -> rank -> long plan -> long edit
  |                                                                  -> thumbnail
- +-> winning game's evidence -> short decisions -> vertical edits
+ +-> game evidence + opening/between-game/closing evidence -> judge -> two shorts
                                                                     |
                                             review -> YouTube upload -> Unlisted check
                                                                     -> gallery link
@@ -25,23 +25,27 @@ workspace/<vod-id>/
   games.reviewed.json      optional corrected boundaries
   selection.json           long-form winner
   game-ranking.json        cached all-game comparison
-  auto-summary.json        output paths; selected_game identifies the edit directory
+  status.json              auto stage, success/error, source workspace
+  auto-summary.json        output paths; workspace field identifies the edit directory
   game-analyses/<game-id>/  isolated game analysis and selected edit outputs
+  vod-shorts/              whole-VOD short evidence, judgment, and cut decisions
 ```
 
-`auto` analyzes and ranks all detected games, selects the long-form winner,
-then creates the long edit, thumbnail, and shorts within that game.
+`rank-games` caches each game's analysis, ranks all games, selects the winner, and
+prints its edit workspace. `auto` then writes the long edit, thumbnail, and the
+independently selected whole-VOD shorts into that workspace. Uncovered source
+footage is analyzed in ten-minute regions; evidence coverage remains continuous.
 
 ### Edit-stage artifacts
 
-Standalone stages can also write these into the original VOD workspace. In an
-`auto` run, they live in `game-analyses/<selected-game>/`.
+Standalone selected-game stages can also write these into the original VOD
+workspace. In an `auto` run, they live in `game-analyses/<selected-game>/`;
+whole-VOD short decisions live in `vod-shorts/`, linked from the edit directory.
 
 ```text
 <edit-workspace>/
   manifest.json            immutable source metadata
   frames/                  cached analysis frames
-  stream-states.json       raw timestamp classifications
   games.json               detected boundaries
   games.reviewed.json      optional human corrections
   selection.json           selected game id
@@ -67,21 +71,24 @@ Standalone stages can also write these into the original VOD workspace. In an
   short-visual-timing.json cached exact frame checks for fleeting payoff banners
   short-exclusions.reviewed.json optional per-game ranges to skip on a fresh discovery run
   short-verdicts.json      cached raw frame/dialogue judgments per proposal
-  short-choices.json       comparison of refined, audited stories; can select zero
-  short-cuts.json          cached raw local boundary and contradiction reviews
-  short-audits.json        cached raw whole-cut quality judgments
+  short-choices.json       source-moment judge ranking, best pair then alternatives
+  short-cuts.json          cached raw shorts-specific cuts for ranked picks
+  short-event-cuts.json    cached shared event-location and dense boundary answers
+  short-event-boundary-review.json event completion and boundary construction status
+  short-editing-status.json construction/repair status for the preserved selection
   short-diagnostics.json   selected/rejected counts and gate reasons
   frames/shorts/          cached denser frames around proposed scenes
   short-candidates.json    verified ranked stories with chronological source segments
   short-candidates.reviewed.json optional corrections matching raw version, game id, and signature
-  short-v8-*.captions.reviewed.json optional corrected phrase and word timing per output
-  short-v8-*.ass           generated active-word captions rendered by libass
+  short-*.captions.reviewed.json optional corrected phrase and word timing per output
+  short-*.captions.raw.json cached raw punctuation/case formatting, separate from corrections
+  short-*.ass              generated active-word captions rendered by libass
   layout.json              normalized facecam crop
   layout.reviewed.json     optional human-corrected facecam, gameplay, and HUD crops
   reports/                 static review HTML
   renders/                 rough MP4 outputs
   usage.jsonl              model usage and estimated cost inputs
-  youtube/<clip>.json      saved upload/session, video URL, confirmation
+  youtube/<clip>.json      upload identity, resumable session, video URL, confirmation
   youtube/long-thumbnail.jpg uploaded long-video poster
 ```
 
@@ -96,8 +103,9 @@ Per-VOD terms take priority when building Whisper's size-limited prompt.
 
 ## Cache and reviewed corrections
 
-Matching stage artifacts are reused. Editorial changes do not redownload
-the source or invalidate matching transcripts. `--force` is stage-specific:
+Matching stage artifacts and validated render sidecars are reused. Interrupted
+beat classifications are saved per completed batch. Editorial changes do not
+redownload the source or invalidate matching transcripts. `--force` is stage-specific:
 scan resamples frames; analysis refreshes classifications; planning refreshes
 editorial choices; thumbnails refreshes concepts while reusing unchanged paid artwork.
 
@@ -115,12 +123,24 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
 
 ## Editing Rules
 
-- Horizontal output targets 9-12 minutes including its cold open and reusable cards, enforced in code as 540-720 seconds, and centers on one game.
+- Horizontal output prefers 10-12 minutes when meaningful content supports it,
+  with a 540-720 second acceptance range including intro and cards, and centers on one game.
 - Code enforces duration; models rank and classify beats.
 - Mechanical deletion targets silent travel, routine farming, shopping, and
   respawn time, but preserves meaningful dialogue and event setup.
 - Open on meaningful speech or understandable action, preserve setup before a
   payoff, and cut dead tails after the reaction.
+- Round-based edits preserve early rounds in order and meaningful build progression.
+  Item/augment analysis and selection, plus relevant host/map/mechanic changes,
+  are useful breathers rather than routine shopping. Tiny fragments must have a
+  complete payoff or consequential follow-up. The final scene shows the resolved
+  result/placement, completes dialogue, and retains at least one speech-free second;
+  final-result breathing space is exempt from routine downtime trimming.
+  If no reviewed `result_end` exists, final-scene inspection may use up to 15 seconds
+  beyond scanner gameplay end, capped by available postgame/source bounds. Only
+  this tail is transcribed into `long-ending-transcript.json`; the game transcript
+  remains cached. Exit at the first natural pause after the immediate result reaction,
+  rather than including renewed post-game review or next-match talk.
 - Reviewed game boundaries may define `result_end`; long-form output must end
   on that Nexus/result beat rather than post-game review.
 - Long-form selection keeps adjacent story units separate and never pads them to a
@@ -162,30 +182,76 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
   caches its version, icon and music identity in `assets/long/title-card.json`.
   A reusable 12-second Fiddlesticks trailer end card
   carries subscribe, Kick, and X messaging through 0:10, then fades through the
-  end. Shared source media and MP4 masters are cached under
+  end. End-card music gain is 0.103125, with a one-second lead and linear two-second
+  fade-in reaching full configured gain one second after card appearance.
+  Shared source media and MP4 masters are cached under
   `assets/long/`, never in a VOD workspace.
 - Champion select is eligible only when speech or chat establishes the premise;
   loading footage is never filler.
-- Iteration 0 discovers shorts only within the selected game; whole-VOD discovery is deferred.
+- Shorts discovery covers the entire VOD independently of the long-form game.
+  `pipeline.py` reuses cached game evidence and analyzes uncovered opening,
+  between-game and closing footage in bounded regions. `vod-shorts/` merges
+  beats, words and frame timestamps onto an absolute VOD clock before discovery
+  and the single source-moment judge. Full source coverage is recorded explicitly.
+  Winner workspaces link to this selection; render validation checks its signature
+   and source identity. Long-video event boundaries are reused on that same clock.
+- Current short eligibility is League of Legends footage (including draft/queue)
+  with meaningful streamer speech. Slots/other games, silent gameplay and game
+  announcer lines are excluded before judgment. Verified speech must match a complete
+  non-corrupt transcript phrase, and construction must preserve that phrase.
 - Short discovery proposes events from all selected-game beats and runs a coarse
-  visual scout across the whole selected game. A second pass uses transcript-health
+  visual scout across the entire VOD. A second pass uses transcript-health
   ranges to connect earlier spoken claims to later visible reversals. Per-game reviewed exclusions keep completed or
   rejected moments out of a fresh discovery run without changing raw evidence.
   Code checks spoken phrases against cached word timings and checks visual
   claims against sampled frame times; the model judges what the images depict.
-  Hooks occur in the first two seconds and payoffs near the end.
-  Accepted stories have one to four chronological scenes, target 20-45 seconds,
-  and are hard-limited to 8-60 seconds. Every candidate is refined without changing
-  its premise, then audited; Nano compares only those survivors. Exact quotes are located in cached
-  word timings; the end waits for the following speech pause rather than cutting
-  a sentence midway. A whole-cut audit rejects clips that only recount an unshown
-  play or rants that merely repeat the same complaint. It can select zero, one, or
-  two; rejected edits are never backfilled. A new discovery run does not silently
-  reuse old reviewed story selections.
+  Fast hooks and tight payoff placement guide editing, rather than setting hard cut points.
+  Verification checks factual support and a complete premise/outcome, not entertainment
+  or the opening of a rough search window. A single Nano judge compares supported source
+  moments before precise editing, ranking the best pair followed by worthwhile alternatives.
+  Only ranked picks are refined, stopping after two distinct edits. Input-matched complete
+  long-video events are reused when available; otherwise the shared locator inspects context
+  and expands it when setup or resolution is missing, followed by dense quarter-second
+  boundary inspection. Every image is labeled with its index/time beside that image;
+  frame-index answers bind to the exact ordered input frame list before conversion to times.
+  Raw decisions remain cached separately from constructed boundaries. The editor preserves
+  complete choice explanations and continues combat through the resolved encounter, not
+  merely a death/punchline; death and spectating are not automatic downtime cuts.
+  Short construction joins phases of the same encounter, protects speech, completes dialogue
+  already underway at the result and omits renewed post-game talk. It can remove surplus
+   pre-action lead at inspected/speech-safe boundaries to fit 90 seconds without cutting action.
+  A final encounter may reuse the same bounded 15-second result tail and cached speech as
+  long-form. `edit_end` binds output validation to that bounded context, not a later match.
+  Construction errors feed back into the same selected event with bounded repair attempts.
+  If repair remains incomplete, the run stops with its selection intact
+  and an actionable status, rather than silently discarding a pick or writing a partial pair.
+  There is no finished-cut editorial audit. Accepted stories have one to four chronological
+   scenes and are hard-limited to 8-90 seconds. Complete setup and useful spoken
+   reaction take priority over making a shorter clip; idle footage is not padding.
+   The final cut retains three additional seconds for reaction, completing any
+   sentence underway at the exit within the same game's bounded source footage.
+  Shorts reuse long-form word-boundary protection and speech-completion checks, plus cached
+  transcripts, frames and evidence matching. Refinement preserves the selected premise and
+  completes useful reactions. The judge can recommend zero, one or multiple ranked moments;
+  unsupported stories are never forced into output. Verification, judging and
+  cutting have separate cache versions, preserving discovery and media on prompt changes.
+  A new discovery run does not silently reuse old reviewed story selections.
 - A multi-scene short uses hard cuts and only self-evident chronological jumps.
-  Captions contain dialogue only. Local transcription repairs can
+  Captions contain dialogue only. Spanish speech may contain English phrases/gaming terms;
+  transcription and caption formatting preserve each word's spoken language, never translate.
+  A cached punctuation pass runs before caption chunking. Its punctuation/case is aligned to
+  source words with original timings; inserted, removed or translated model words never replace
+  the source dialogue. Known inverted-mark spans receive closing punctuation, and this style
+   omits opening `¡`/`¿`. Reviewed caption corrections remain separate and take precedence.
+   Caption rendering removes `!`, `¡` and `.` while retaining question marks;
+   raw punctuation/case decisions and word timing stay intact.
+  Local transcription repairs can
   restore spoken captions where the game-length transcript was corrupted.
 - Vertical output is 1080x1920 with a 680px facecam above 1240px gameplay.
+  The default gameplay crop is normalized `[0.22, 0, 0.49, 1]`, biased left to
+  retain the champion-stats HUD. Per-VOD explicit crops can override it. Render
+  provenance fingerprints the effective layout, including defaults, so a framing
+  change invalidates older renders.
   Both panels scale uniformly to fill and crop overflow without distortion;
   captions are timed against the concatenated scenes at the panel seam. A third
   crop copies the original League KDA, CS, and game-time HUD from the same
@@ -254,7 +320,8 @@ Remotion only when motion graphics need animation that ASS cannot express.
 
 ## Gallery publishing
 
-Local `publish` validates renders, stages media as hardlinks (copy fallback),
+`catalog-sync` adds missing League streams by Kick URL without changing existing
+entries. Local `publish` validates renders, stages media as hardlinks (copy fallback),
 copies the thumbnail and short poster frames, and replaces that VOD's clip records.
 It uses the chosen/provisional thumbnail title for long form and candidate titles
 for shorts. `--youtube ID` substitutes an existing long-video embed without a

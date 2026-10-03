@@ -23,6 +23,17 @@ def decision(*parts):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_final_result_finishes_dialogue_then_retains_one_speech_free_second(self):
+        part = event(end=30, downtime=30)
+        words = [{"word": "perdimos", "start": 29.8, "end": 30.4},
+                 {"word": "chat", "start": 30.7, "end": 31.2},
+                 {"word": "siguiente", "start": 34, "end": 34.5}]
+        frames = [{"timestamp": t} for t in range(51)]
+        result = _long_boundary_segments(decision(part), (0, 50), words, frames, final_scene=True)
+        self.assertAlmostEqual(result[-1]["end"], 32.2)
+        with self.assertRaisesRegex(ValueError, "speech-free"):
+            _long_boundary_segments(decision(part), (0, 32), words, frames, final_scene=True)
+
     def test_shared_setup_is_deduplicated_without_altering_approved_bounds(self):
         narrow = {**event(), "source_start": 10, "source_end": 30, "scene_id": "first", "required": False}
         wide = {**event(9, 40), "source_start": 9, "source_end": 40, "scene_id": "second", "required": True}
@@ -33,6 +44,27 @@ class BoundaryTests(unittest.TestCase):
         wide["source_start"] = 15
         with self.assertRaisesRegex(ValueError, "overlap"):
             _deduplicate_long_events([narrow, wide])
+
+    def test_adjacent_events_share_pre_action_context_without_repeating_footage(self):
+        premise = {**event(57, 64, action=59, outcome=62, reaction=63, downtime=None),
+                   "event_kind": "speech", "source_start": 157, "source_end": 164, "scene_id": "premise"}
+        fight = {**event(59, 132, action=70, outcome=129, reaction=130, downtime=None),
+                 "source_start": 159, "source_end": 232, "relative_start": 59, "scene_id": "fight"}
+        reaction = {**event(122, 129, action=123, outcome=127, reaction=128, downtime=None),
+                    "event_kind": "speech", "source_start": 222, "source_end": 229, "scene_id": "reaction", "required": True}
+        result = _deduplicate_long_events([premise, fight, reaction])
+        self.assertEqual([(p["source_start"], p["source_end"]) for p in result], [(157, 164), (164, 232)])
+        self.assertEqual((result[1]["start"], result[1]["relative_start"]), (64, 64))
+        self.assertTrue(result[1]["required"])
+
+    def test_duplicate_event_scouts_keep_union_of_approved_boundaries(self):
+        first = {**event(), "source_start": 110, "source_end": 130, "scene_id": "first"}
+        second = {**event(11, 31, action=13, outcome=27, reaction=29, downtime=31),
+                  "source_start": 111, "source_end": 131, "scene_id": "second", "required": True}
+        result = _deduplicate_long_events([first, second])
+        self.assertEqual([(p["source_start"], p["source_end"]) for p in result], [(110, 131)])
+        self.assertEqual(result[0]["end"], 31)
+        self.assertTrue(result[0]["required"])
 
     def test_one_word_speech_anchor_must_match_its_word_timestamp(self):
         part = event()
@@ -106,6 +138,97 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual([(s["start_beat_id"], s["end_beat_id"]) for s in scenes], [(0, 2), (3, 5), (29, 29)])
         self.assertEqual(sum(s["end"] - s["start"] for s in scenes), 140)
 
+    def test_short_frame_indices_resolve_to_inspected_times_without_changing_raw_output(self):
+        from milloclips.editing import _short_frame_decision
+
+        frames = [{"timestamp": time} for time in (0, 2, 4, 6)]
+        raw = {"needs_earlier_context": False, "needs_later_context": False, "segments": [{
+            "start_frame": 0, "action_frame": 1, "outcome_frame": 2, "reaction_frame": 2, "end_frame": 3,
+            "event_kind": "combat", "start_reason": "approach", "end_reason": "round finished",
+            "action_detail": "the champions engage", "outcome_detail": "the round loss is visible",
+            "reaction_detail": "the immediate round aftermath"}]}
+        resolved = _short_frame_decision(raw, frames)
+        self.assertEqual(resolved["segments"][0]["outcome_time"], 4)
+        self.assertNotIn("outcome_time", raw["segments"][0])
+        self.assertEqual(_long_boundary_segments(resolved, (0, 8), [], frames, complete_combat=True)[0]["end"], 6)
+        raw["segments"][0]["outcome_frame"] = 99
+        with self.assertRaisesRegex(ValueError, "actual supplied image"):
+            _short_frame_decision(raw, frames)
+
+    def test_short_closes_ongoing_english_reaction_without_starting_new_talk(self):
+        from milloclips.editing import _short_frame_decision
+
+        raw = {"needs_earlier_context": False, "needs_later_context": False, "segments": [{
+            "start_frame": 0, "action_frame": 1, "outcome_frame": 2, "reaction_frame": 2, "end_frame": 3,
+            "event_kind": "combat", "start_reason": "approach", "end_reason": "round finished",
+            "action_detail": "the champions engage", "outcome_detail": "the round loss is visible",
+            "reaction_detail": "the immediate round aftermath"}]}
+        words = [{"word": text, "start": start, "end": end}
+                 for text, start, end in (("Oh", 3.5, 3.8), ("my", 3.8, 4.1), ("God", 4.1, 4.3), ("next", 4.9, 5.3))]
+        cut = _short_frame_decision(raw, [{"timestamp": time} for time in (0, 2, 4, 6)], words)
+        self.assertAlmostEqual(cut["segments"][0]["end"], 4.4)
+        self.assertEqual(cut["segments"][0]["evidence"]["reaction_end"]["quote"], "God")
+        quiet = _short_frame_decision(raw, [{"timestamp": time} for time in (0, 2, 4.6, 6)], words)
+        self.assertLess(quiet["segments"][0]["end"], 4.9)
+
+    def test_short_budget_removes_pre_action_lead_without_truncating_combat(self):
+        from milloclips.editing import _fit_short_event_budget
+
+        parts = [event(0, 70, action=30, outcome=66, reaction=68, downtime=None)]
+        fitted = _fit_short_event_budget(parts, 60, [], [{"timestamp": time} for time in range(71)], 40)
+        self.assertEqual(fitted[0]["start"], 10)
+        self.assertEqual(fitted[0]["end"], 70)
+        self.assertEqual(fitted[0]["outcome_time"], 66)
+        self.assertEqual(parts[0]["start"], 0)
+        with self.assertRaises(ValueError):
+            _fit_short_event_budget(parts, 60, [], [{"timestamp": time} for time in range(71)], 8)
+
+    def test_short_uses_shared_event_completion_and_dense_boundary_passes(self):
+        from milloclips.editing import _edit_selected_short
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.mp4"
+            (root / "manifest.json").write_text(json.dumps({"source": str(source), "duration": 1000}))
+            (root / "transcript.json").write_text('{"words":[]}')
+            (root / "beats.json").write_text(json.dumps({"beats": [{"id": 0, "start": 0, "end": 800}]}))
+            game = {"id": "game-001", "gameplay_start": 100, "gameplay_end": 900}
+            candidate = {"title": "Selected fight", "reason": "The complete fight", "hook": "A shout", "payoff": "A reaction",
+                         "segments": [{"relative_start": 58, "relative_end": 76, "source_start": 158, "source_end": 176}],
+                         "hook_evidence": {"kind": "visual", "before_time": 60, "time": 61, "detail": "the first action happens"},
+                         "payoff_evidence": {"kind": "visual", "before_time": 70, "time": 71, "detail": "the streamer reacts early"},
+                         "_images": ["verified-hook.jpg", "transient-payoff.jpg"]}
+            complete = decision(event(46, 64, action=48, outcome=60, reaction=62, downtime=None),
+                                event(68, 100, action=70, outcome=94, reaction=98, downtime=100))
+            ai = AI(root, mock=True)
+            ai.mock = False
+
+            def frames(_source, _output, interval, *, start, end):
+                return [{"timestamp": start + index * interval, "path": "frame.jpg"}
+                        for index in range(int((end - start) / interval))]
+
+            with patch("milloclips.editing.sample_boundary_frames", side_effect=frames) as sampling, \
+                    patch.object(ai, "refine_long_scene", side_effect=[{"needs_later_context": True}, complete, complete,
+                                                                     {"needs_later_context": True}, complete, complete]) as requests:
+                cut = _edit_selected_short(root, ai, candidate, game, source, "tag", [], {}, {"editorial_end": 900}, [], [])
+                self.assertEqual(cut["relative_start"], 46)
+                self.assertEqual(cut["relative_end"], 100)
+                self.assertEqual(cut["segments"][0]["outcome_time"], 94)
+                self.assertEqual(cut["duration"], 54)
+                self.assertEqual(len(cut["segments"]), 1)
+                self.assertEqual(requests.call_args.args[0]["format"], "short")
+                self.assertIn({"timestamp": 71, "path": "transient-payoff.jpg"}, requests.call_args_list[0].args[3])
+                self.assertIn(0.25, [call.args[2] for call in sampling.call_args_list])
+                self.assertEqual(_edit_selected_short(root, ai, candidate, game, source, "tag", [], {}, {"editorial_end": 900}, [], []), cut)
+                self.assertEqual(requests.call_count, 3)
+                def more_frames(*args, **kwargs):
+                    sampled = frames(*args, **kwargs)
+                    extra = {"timestamp": kwargs["start"] + args[2] / 2, "path": "extra.jpg"}
+                    return sorted([*sampled, extra], key=lambda frame: frame["timestamp"])
+                sampling.side_effect = more_frames
+                self.assertEqual(_edit_selected_short(root, ai, candidate, game, source, "tag", [], {}, {"editorial_end": 900}, [], []), cut)
+                self.assertEqual(requests.call_count, 6)
+
     def test_backward_expansion_dense_sampling_and_cached_decisions(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -132,6 +255,28 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn(0.25, [call.args[2] for call in sampling.call_args_list])
                 _refine_long_scenes(root, ai, game, beats, [scene], {"editorial_end": 900}, 0, False)
                 self.assertEqual(calls.call_count, 4)
+
+    def test_final_scene_can_inspect_cached_result_context_beyond_scanner_gameplay_end(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "manifest.json").write_text('{"source":"source.mp4","duration":120}')
+            (root / "transcript.json").write_text('{"words":[]}')
+            ai = AI(root, mock=True)
+            game = {"id": "game", "gameplay_start": 0, "gameplay_end": 100, "postgame_end": 110}
+            scene = {"start_beat_id": 0, "end_beat_id": 0, "start": 80, "end": 100, "final_scene": True, "purpose": "ending"}
+            answer = decision(event(80, 104, action=82, outcome=102, reaction=103, downtime=None))
+            with patch("milloclips.editing.sample_boundary_frames", return_value=[]), \
+                    patch("milloclips.editing.extract_audio"), \
+                    patch.object(ai, "transcribe", return_value={"words": [{"word": "fin", "start": 2, "end": 3}]}) as transcribe, \
+                    patch.object(ai, "refine_long_scene", return_value=answer) as refine:
+                cuts, _ = _refine_long_scenes(root, ai, game, [{"id": 0, "start": 0, "end": 100}],
+                                             [scene], {"editorial_end": 100}, None, False, require_intro_hint=False)
+                self.assertEqual(cuts[-1]["source_end"], 104)
+                self.assertEqual(refine.call_args.args[0]["allowed_region"][1], 110)
+                self.assertIn({"word": "fin", "start": 102, "end": 103}, refine.call_args.args[2])
+                _refine_long_scenes(root, ai, game, [{"id": 0, "start": 0, "end": 100}],
+                                    [scene], {"editorial_end": 100}, None, False, require_intro_hint=False)
+                self.assertEqual(transcribe.call_count, 1)
 
     def test_invalid_refinement_is_reported_instead_of_rough_fallback(self):
         with TemporaryDirectory() as temporary:

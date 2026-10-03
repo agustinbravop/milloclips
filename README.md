@@ -2,7 +2,9 @@
 
 Turn Elmiillor Kick VODs into a ~10-minute League of Legends edit, two vertical
 shorts, and an AI-generated thumbnail. Rank every detected game for the long
-edit; generate shorts within the winning game.
+edit; discover shorts independently across the whole VOD, including between games.
+For now, shorts are League of Legends moments with meaningful Elmiillor speech;
+slots/other games and silent gameplay are excluded. Complete stories may run up to 90 seconds.
 
 For [Elmiillor's AI editor challenge](https://x.com/Elmiillor/status/2100601890383835200),
 use source footage from **September 17–October 1, 2026 inclusive**. Generate one
@@ -33,9 +35,9 @@ uv run milloclips auto https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee
 to `auto-summary.json`, which lists the outputs. Two directories matter:
 
 - **VOD workspace:** `workspace/<vod-id>` contains source metadata, scan/ranking,
-  and `auto-summary.json`.
-- **Edit workspace:** `workspace/<vod-id>/game-analyses/<selected_game>`, using
-  the summary's **`selected_game`** field, contains the outputs to review/upload.
+  `status.json`, and `auto-summary.json`.
+- **Edit workspace:** the summary's **`workspace`** field, usually
+  `workspace/<vod-id>/game-analyses/<game-id>`, contains the outputs to review/upload.
 
 To resume after an interruption, rerun `auto` with the VOD workspace:
 
@@ -43,8 +45,9 @@ To resume after an interruption, rerun `auto` with the VOD workspace:
 uv run milloclips auto "workspace/<vod-id>"
 ```
 
-Matching analysis is reused. `--force` refreshes analysis/edit decisions while
-retaining downloaded media, matching transcripts, and unchanged paid image requests.
+Matching analysis and renders are reused. `status.json` records a failure's stage
+and error. `--force` refreshes analysis/edit decisions while retaining downloaded
+media, matching transcripts, and unchanged paid image requests.
 
 ## 2. Review the outputs
 
@@ -53,7 +56,7 @@ video and both shorts; inspect `long-transitions.mp4` for cuts and audio joins.
 Choose the thumbnail/title before uploading:
 
 ```bash
-# Replace the ids below; use selected_game from auto-summary.json.
+# Replace this path with auto-summary.json's workspace value.
 EDIT="workspace/<vod-id>/game-analyses/<game-id>"
 uv run milloclips thumbnails "$EDIT" --choose 2
 ```
@@ -71,7 +74,7 @@ uv run milloclips youtube-auth --client-secrets .youtube/client_secret.json
 uv run milloclips publish "$EDIT" --upload --clip long --approve
 ```
 
-Use `--clip short-v8-01` or `short-v8-02` for a short. Uploads reuse pipeline titles;
+Use `--clip short-01` or `short-02` for a short. Uploads reuse pipeline titles;
 long uploads also attach the chosen thumbnail. YouTube automatically classifies
 eligible vertical videos as Shorts.
 
@@ -86,10 +89,10 @@ Retry the same command after interruptions or daily limits; progress is saved.
 ## 4. Link the confirmed upload to the gallery
 
 ```bash
+uv run milloclips catalog-sync --since 2026-09-17 --until 2026-10-01
 uv run milloclips publish "$EDIT" --confirm-youtube --clip long --approve
 ```
 
-Requires a matching VOD entry in `website/static/catalog.json`.
 Confirmation checks Unlisted visibility, processing, and embedding, then updates
 one gallery clip while preserving the others. Use the same `--clip` as the upload.
 Deploy the website separately to make the catalog change live.
@@ -97,15 +100,18 @@ Deploy the website separately to make the catalog change live.
 Plain `publish "$EDIT" --approve` instead publishes **all local clips** and
 replaces that VOD's gallery clip records. Use `--confirm-youtube` for this YouTube workflow.
 
-## Generate more eligible VODs
+## Generate the eligible League VOD batch
 
 ```bash
-uv run milloclips vods --league-only --limit 1000
+uv run milloclips vods --league-only --since 2026-09-17 --until 2026-10-01 --limit 1000 --json \
+  | uv run python -c 'import json,sys; [print(v["url"]) for v in json.load(sys.stdin)]' \
+  | xargs -P 3 -I{} uv run milloclips auto {}
 ```
 
-Select URLs whose UTC start dates are September 17–October 1, 2026 inclusive,
-then run `auto` for each. Finish one VOD first to warm shared assets. Review
-outputs and upload serially; generation never publishes anything.
+This generates available League-category VODs returned by Kick, at concurrency 3;
+`--limit 1000` avoids the default ten-result cap. Finish the first VOD before
+starting this batch to warm shared assets. Review outputs and upload serially;
+the batch does not publish anything.
 
 ## Help and checks
 

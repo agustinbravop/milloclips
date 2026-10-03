@@ -81,7 +81,7 @@ premise or treat candidate numbers as permanent editorial categories.
 - Video titles use FULL CAPS and more context than the short thumbnail headline:
   a concrete action/claim plus the relevant pick, role, build or stakes.
 - Omit opening Spanish exclamation/question marks (`¡`, `¿`); closing `!`, `?`
-  and `?!` are welcome only when they fit. Keep accents and natural Spanish grammar.
+  and `?!` are welcome when they fit. Keep accents and natural Spanish grammar.
 - Approved title examples: NO SE PUEDE ESTAR MÁS FEDEADO!, CONOCES EL SHEN
   JUNGLA FULL AP?, SKARNER LETALIDAD ES UNA LOCURA!, PERO QUÉ ES ESTA
   TEMPORADA?!, FUNDAMENTOS DE LA JUNGLA, HE DESCUBIERTO EL NUEVO META,

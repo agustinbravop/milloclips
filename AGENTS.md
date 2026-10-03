@@ -21,7 +21,9 @@ for the current real run. Optimize for fast learning before production polish.
 - Keep arithmetic, timestamps, duration limits, and media validation in code.
 - Cache each stage; prompt changes must not redownload or retranscribe media.
 - Keep raw model output separate from reviewed corrections.
-- Long-form and Iteration 0 shorts come from the selected game. Whole-VOD short discovery is deferred.
+- Rank all detected games before choosing the long-form game. Discover and judge shorts independently across the entire VOD, including between-game footage.
+- For now, shorts must be League of Legends moments with meaningful Elmiillor speech. Exclude slots/other games and silent gameplay. Allow up to 90 seconds for complete setup, outcome and spoken reaction.
+- Leave about three seconds after a short's final event for streamer reaction, finishing any spoken sentence. Render captions without exclamation marks or periods; preserve question marks.
 - Do not build queues, a vector database, or automatic publishing.
 - Upgrade a model only after a reviewed Nano-vs-stronger-model comparison.
 - Run tests without `-v`; capture noisy media logs and show summaries or relevant failures.

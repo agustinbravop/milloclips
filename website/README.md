@@ -68,7 +68,7 @@ uploaded, leaving every other field unchanged.
 - Streams, titles, dates, durations, Kick URLs: real Kick data.
 - `images/vod-809acd6b.png`: the real generated thumbnail.
 - Clip `duration`/`width`/`height`: measured from the actual pipeline renders
-  (`long-rough.mp4`, `short-v8-01.mp4`, `short-01.mp4`).
+  (`long-rough.mp4`, `short-01.mp4`, `short-02.mp4`).
 - `static/media/*.mp4`: synthetic ffmpeg placeholders, so playback is testable
   before real MP4s are published. Replace them; no code changes needed.
 - Provisional copy: the long-form titles were written by hand for the prototype

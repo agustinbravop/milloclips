@@ -69,7 +69,9 @@ def scan_report(vod_dir: Path) -> Path:
 def shorts_report(vod_dir: Path) -> Path:
     candidates = short_candidates(vod_dir)
     valid_render_names = {render["render_name"] for render in validated_short_renders(vod_dir)}
-    diagnostics_path = vod_dir / "short-diagnostics.json"
+    raw = read_json(vod_dir / "short-candidates.json")
+    evidence_dir = Path(raw["workspace"]) if raw.get("scope") == "vod" else vod_dir
+    diagnostics_path = evidence_dir / "short-diagnostics.json"
     diagnostics = read_json(diagnostics_path) if diagnostics_path.exists() else {}
     cards = []
     for index, item in enumerate(candidates, 1):
@@ -81,17 +83,19 @@ def shorts_report(vod_dir: Path) -> Path:
         ) + "</div>" if images else ""
         cards.append(
             f"""<article class="story"><div class="story-head"><span class="rank">{index:02d}</span><div class="story-content"><h2>{html.escape(item['title'])}</h2><p class="time">{format_time(item['source_start'])} → {format_time(item['source_end'])} · {format_time(item.get('duration', item['source_end'] - item['source_start']))} edited · {len(item.get('segments', [item]))} scene(s) · {html.escape(render_name)}.mp4</p><span class="status{' valid' if valid_render else ''}">{'validated render' if valid_render else 'render missing or stale'}</span></div></div>
-<dl class="facts"><div class="fact"><dt>Hook</dt><dd>{html.escape(item.get('hook', ''))}</dd></div><div class="fact"><dt>Payoff</dt><dd>{html.escape(item.get('payoff', ''))}</dd></div><div class="fact"><dt>Class</dt><dd>{html.escape(item.get('quality_class', 'unclassified'))}</dd></div><div class="fact"><dt>Gate</dt><dd>{html.escape(item.get('gate_reason', ''))}</dd></div></dl>
+<dl class="facts"><div class="fact"><dt>Hook</dt><dd>{html.escape(item.get('hook', ''))}</dd></div><div class="fact"><dt>Payoff</dt><dd>{html.escape(item.get('payoff', ''))}</dd></div></dl>
 <p class="segments">Source cuts: <span>{' · '.join(f"{format_time(segment['source_start'])}–{format_time(segment['source_end'])}" for segment in item.get('segments', [item]))}</span></p>{evidence_html}</article>"""
         )
     rejected = "".join(
         f'<article class="story"><p class="eyebrow">{html.escape(str(item.get("stage", "gate")))}</p><h2>{html.escape(str(item.get("title", "Untitled")))}</h2><p class="summary">{html.escape(str(item.get("reason", "Rejected")))}</p></article>'
         for item in diagnostics.get("rejected", [])
     )
+    ranking = f"{diagnostics['ranked_count']} judge recommendations · " if "ranked_count" in diagnostics else ""
     summary = (f"{diagnostics.get('proposal_count', 0)} proposals · {diagnostics.get('verified_count', 0)} verified · "
-               f"{diagnostics.get('gated_count', 0)} passed gates · {len(candidates)} selected")
+               f"{ranking}"
+               f"{diagnostics.get('edited_count', diagnostics.get('gated_count', 0))} valid edits · {len(candidates)} selected")
     rejected_section = f'<h1 style="margin:48px 0 18px">Rejected</h1><div class="stories">{rejected}</div>' if rejected else ""
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><p class="label">Shorts diagnostics</p><h1>Selected stories</h1><p class="dek">{summary}. Times refer to the source VOD; edited length excludes gaps between scenes.</p></header><main><div class="stories">{''.join(cards) if cards else '<div class="empty">No candidate cleared the automatic quality gates.</div>'}</div>{rejected_section}</main></body></html>"""
+    body = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Milloclips shorts</title><style>{CSS}</style></head><body><header><p class="label">Shorts diagnostics</p><h1>Selected stories</h1><p class="dek">{summary}. Times refer to the source VOD; edited length excludes gaps between scenes.</p></header><main><div class="stories">{''.join(cards) if cards else '<div class="empty">No judge-recommended moment produced a valid short edit.</div>'}</div>{rejected_section}</main></body></html>"""
     output = vod_dir / "reports" / "short-candidates.html"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(body, encoding="utf-8")

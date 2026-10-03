@@ -64,9 +64,14 @@ def _kick_recording_url(source: str) -> str | None:
     return match.group(1).replace("\\/", "/") if match else None
 
 
+def vod_directory(source: str, root: Path) -> Path:
+    """Workspace a source maps to, known before any download starts."""
+    return root / hashlib.sha256(source.encode()).hexdigest()[:12]
+
+
 def ingest(source: str, root: Path) -> Path:
-    vod_id = hashlib.sha256(source.encode()).hexdigest()[:12]
-    vod_dir = root / vod_id
+    vod_dir = vod_directory(source, root)
+    vod_id = vod_dir.name
     vod_dir.mkdir(parents=True, exist_ok=True)
 
     local = Path(source).expanduser()
