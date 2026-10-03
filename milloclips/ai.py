@@ -532,9 +532,7 @@ Images are grouped in beat order, three images per beat.
 
     def thumbnail_concepts(self, beats: list[dict], story: str, images: list[Path], force: bool = False, references: list[dict] | None = None, reactions: list[dict] | None = None) -> list[dict]:
         if self.mock:
-            choices = [("ME PASÓ ESTO", "action", "shocked"),
-                       ("JUGUÉ ESTO", "identity", "hold-on"),
-                       ("ME VOLVIÓ LOCO", "action", "smiling")]
+            choices = [("ME PASÓ ESTO", "action", "shocked")]
             return [
                 {"title": headline.title(), "headline": headline, "hook": "high-stakes/amazing moment",
                  "template": template, "expression": expression, "beat_id": beats[index % len(beats)]["id"]}
@@ -542,15 +540,14 @@ Images are grouped in beat order, three images per beat.
             ] if beats else []
         evidence = [{key: beat.get(key) for key in ("id", "type", "importance", "text", "reason")} for beat in beats]
         prompt = """
-Create exactly three distinct Spanish YouTube title/thumbnail concepts for this FINAL League edit.
+Create exactly ONE strong Spanish YouTube title/thumbnail concept for this FINAL League edit.
 Think punchy League creator packaging: expressive streamer face, one dominant game subject,
-very short readable copy. Choose the three strongest DISTINCT hooks from this video's evidence.
-Do not force one action, one champion, and one strategy candidate; candidate numbers have no meaning.
+very short readable copy. Choose the strongest hook from this video's evidence.
 Each becomes a Sunburst-generated composition with an exact real reaction photo and optional exact icons.
 Think cinematically staged, game-faithful Rift/character artwork, a relevant build or statistic,
 or a simpler close-perspective Rift backdrop and exceptionally strong headline. No mandatory slots.
 Use reference examples for visual language, never copy their content or people's faces.
-Choose different hooks, not synonyms. Headlines must be natural Spanish, never keyword soup.
+Headlines must be natural Spanish, never keyword soup.
 Name the hook's concrete subject, mechanic or consequence. Reject interchangeable labels like
 ELECCIÓN INSÓLITA, PICK RARO or QUÉ LOCURA; they do not tell viewers what is special about this video.
 Write titles as something a Spanish-speaking League creator would actually say, not compressed
@@ -620,20 +617,14 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             write_json(cache_path, cache)
         write_json(self.vod_dir / "thumbnail-concepts.raw.json", parsed)
         audit = cache.get("audit") or self._json(
-            "Audit proposed League thumbnail concepts against the supplied evidence. Natural Spanish "
-            "paraphrases are allowed; unsupported game entities, achievements, outcomes, and teammate "
-            "plays attributed to ElmilloR are not. Judge copy separately from factual grounding: "
-            "reject unnatural Spanish, compressed keyword strings and copy that merely labels a topic "
-            "without a reason to watch. Do not excuse awkward wording because the subject is evidenced. "
-            "Check requested champion/item/rune assets against gameplay and speech. "
-            "A strategy claim needs evidence; do not turn plans/hypotheticals into achievements. "
-            'Return JSON {"reviews":[{"index":0,"accepted":true,"reason":"..."}]}, one per concept. '
+            "Audit the single proposed League thumbnail concept against supplied evidence. Natural Spanish "
+            "paraphrases are allowed; reject unsupported entities, outcomes, teammate plays attributed to ElmilloR, "
+            "unnatural copy, unsupported assets, hypothetical claims presented as achieved, and emotionally "
+            "misleading reaction photos. Return JSON {\"reviews\":[{\"index\":0,\"accepted\":true,\"reason\":\"...\"}]}. "
             "Concepts: " + json.dumps(parsed.get("concepts", []), ensure_ascii=False)
             + " Evidence: " + json.dumps(evidence, ensure_ascii=False)
-            + " Persistent human preferences: " + preferences
-            + " Reaction-photo catalog: " + json.dumps(reactions or [], ensure_ascii=False)
-            + " Reaction photos follow the gameplay images; reject an emotionally misleading photo choice.", [*images, *reaction_images],
-            model=getattr(self, "editorial_model", getattr(self, "model", "gpt-5-nano")),
+            + " Preferences: " + preferences + " Reaction-photo catalog: " + json.dumps(reactions or [], ensure_ascii=False),
+            [*images, *reaction_images], model=model,
         )
         write_json(self.vod_dir / "thumbnail-concepts.audit.raw.json", audit)
         cache["audit"] = audit
@@ -683,41 +674,7 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
                            and asset.get("kind") in {"item", "rune"}
                             and isinstance(asset.get("key"), str) and asset["key"].isdecimal()][:6],
             })
-        return output[:3]
-
-    def choose_thumbnail(self, candidates: list[dict]) -> dict:
-        if self.mock:
-            return {"winner": 1, "reason": "Mock comparison; review the contact sheet."}
-        decision = self._json(
-            "Compare these rendered Spanish League YouTube thumbnails, in numbered order. "
-            "Choose for readable mobile-size text, recognizable large ElmilloR reaction, clear game subject, "
-            "visual hierarchy, contrast, and a compelling truthful hook. Penalize awkward Spanish, "
-            "clutter, client/browser/loading backgrounds, and obscured faces. Do not claim CTR estimates. "
-            "Gaming vocabulary such as support, build, carry, AP is appropriate in Spanish League copy. "
-            "The first images are full-size candidates in order; the remaining images are their actual "
-            "280x158 feed previews in the same order. Check exact headline spelling/accents/completeness "
-            "against the EXACT metadata headline, not an imagined corrected version; check unreadable text, synthetic extra people/faces, fake stats, incorrect champions "
-            "and whether icons obscure eyes/mouth. The real photo is integrated into the finished image, "
-            "so judge identity, expression and pose rather than expecting a pixel-exact cutout. Reject publication if an essential check fails. "
-            'Return JSON {"winner":1,"reason":"short explanation","candidates":'
-            '[{"number":1,"strength":"...","weakness":"...","headline_matches":true,'
-            '"extra_people":false,"publishable":false}],"publishable":false,"next_changes":["..."]}. '
-            "Fill every check for every candidate. extra_people means any human outside the single supplied "
-            "ElmilloR photo, including duplicated ElmilloR heads or people copied from style references. "
-            "If essential corrections are still required, publishable MUST be false for that candidate. "
-            "Choosing a winner does not mean it is publishable. If none meets the human preferences, "
-            "set publishable false and explain concrete next changes. Persistent human preferences: "
-            + thumbnail_preferences(self.vod_dir) + " Candidate evidence: " + json.dumps(candidates, ensure_ascii=False),
-            [Path(row["render"]) for row in candidates] + [Path(row["mobile_render"]) for row in candidates if row.get("mobile_render")], model=self.editorial_model, detail="high",
-        )
-        # Preserve the original judgment; incomplete/contradictory checks cannot
-        # turn a best-of-three recommendation into publication approval.
-        original = dict(decision)
-        winner = next((row for row in decision.get("candidates", []) if row.get("number") == decision.get("winner")), {})
-        decision["publishable"] = (decision.get("publishable") is True and winner.get("publishable") is True
-                                    and winner.get("headline_matches") is True and winner.get("extra_people") is False)
-        decision["raw_model_output"] = original
-        return decision
+        return output[:1]
 
     def shorts(self, beats: list[dict]) -> list[dict]:
         evidence = [

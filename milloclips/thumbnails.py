@@ -16,7 +16,7 @@ from .thumbnail_art import generate_artwork, plan_artwork
 
 
 SIZE = (1280, 720)
-CANDIDATES = 2
+CANDIDATES = 1
 YELLOW = "#E9FF1F"
 PATCH = "16.18.1"
 DRAGON = "https://ddragon.leagueoflegends.com/cdn"
@@ -312,9 +312,9 @@ def _brief(vod_dir: Path, plan: dict, beats: list[dict], frames: dict[int, Path]
     evidence += [beat for beat in beats if beat not in evidence and beat.get("type") in {"STRATEGY", "SETUP", "REACTION"}][:12]
     concepts = ai.thumbnail_concepts(evidence, plan.get("story", ""), [frames[beat["id"]] for beat in evidence], force=force, references=references, reactions=reactions) if ai else []
     concepts = [concept for concept in concepts if concept.get("beat_id") in frames and concept.get("template") in {"action", "identity", "strategy"}]
-    if len(concepts) < CANDIDATES:
+    if not concepts:
         if ai and not ai.mock:
-            raise ValueError("Fewer than two grounded thumbnail concepts; inspect thumbnail-concepts.raw.json and retry. No generic backfill was rendered.")
+            raise ValueError("No grounded thumbnail concept; inspect thumbnail-concepts.raw.json and retry. No generic backfill was rendered.")
         concepts = (concepts + _fallback_concepts(beats))[:CANDIDATES]
     write_json(path, {**key, "concepts": concepts})
     return concepts
@@ -389,29 +389,11 @@ def _publish_candidates(vod_dir: Path, rows: list[dict]) -> Path:
         index = correction["candidate"] - 1
         if hashlib.sha256(Path(rows[index]["render"]).read_bytes()).hexdigest() == correction.get("source_digest"):
             rows[index] = dict(result)
-    previews = []
-    for row in rows:
-        mobile_path = output / f"{row['number']:02d}-mobile.jpg"
-        with Image.open(row["render"]) as canvas:
-            previews.append(canvas.resize((480, 270)))
-            canvas.resize((280, 158), Image.Resampling.LANCZOS).save(mobile_path, quality=95)
-        row["mobile_render"] = str(mobile_path)
-    sheet = _contact_sheet(previews, rows, 480, 21)
-    sheet_path = output / "contact-sheet.jpg"
-    sheet.save(sheet_path, quality=90)
-    mobile = _contact_sheet(previews, rows, 280, 18)
-    mobile.save(output / "mobile-contact-sheet.jpg", quality=95)
+    sheet_path = Path(rows[0]["render"])
     write_json(output / "variants.json", rows)
-    selection = output / "selection.reviewed.json"
-    if selection.exists():
-        previous = read_json(selection)
-        if previous.get("signature") == _signature(rows):
-            select_thumbnail(vod_dir, previous["winner"])
-            return sheet_path
-    # Candidate 1 is the export; the human compares candidates and may override.
     with Image.open(rows[0]["render"]) as image:
         image.save(vod_dir / "renders" / "thumbnail.png", optimize=True)
-    write_json(output / "selection.json", {"status": "pending", "provisional": 1, "signature": _signature(rows)})
+    write_json(output / "selection.json", {"status": "selected", "source": "generated", "winner": 1, "signature": _signature(rows)})
     return sheet_path
 
 
@@ -419,8 +401,9 @@ def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline:
     """One explicit edit call; retain the original artwork and recorded composition mode."""
     output = vod_dir / "renders" / "thumbnails"
     rows = read_json(output / "variants.json")
-    if type(candidate) is not int or not 1 <= candidate <= len(rows) or not edit.strip():
-        raise ValueError("Choose a candidate and give a nonempty thumbnail edit")
+    candidate = 1
+    if not rows or not edit.strip():
+        raise ValueError("Generate a thumbnail and give a nonempty edit")
     row = dict(rows[candidate - 1])
     if not row.get("artwork") or not row.get("reaction_photo"):
         raise ValueError("Generate Sunburst candidates before revising")
@@ -485,35 +468,3 @@ def _signature(rows: list[dict]) -> str:
     return hashlib.sha256(b"".join(Path(row["render"]).read_bytes() for row in rows)
                           + json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
-
-def select_thumbnail(vod_dir: Path, winner: int | None = None, ai: AI | None = None) -> Path:
-    output = vod_dir / "renders" / "thumbnails"
-    rows = read_json(output / "variants.json")
-    signature = _signature(rows)
-    preferences = thumbnail_preferences(vod_dir)
-    if winner is None:
-        if ai is None:
-            raise ValueError(f"Choose candidate 1-{len(rows)}, or supply AI for comparison")
-        cached = output / "selection.raw.json"
-        if cached.exists() and all(read_json(cached).get(key) == value for key, value in
-                                   (("signature", signature), ("preferences", preferences),
-                                    ("model", ai.editorial_model), ("review_version", 3))):
-            decision = read_json(cached)
-        else:
-            decision = ai.choose_thumbnail(rows)
-            write_json(cached, {**decision, "signature": signature, "preferences": preferences, "model": ai.editorial_model, "review_version": 3})
-        winner = decision.get("winner")
-        source = "ai"
-    else:
-        decision = {}
-        source = "human"
-    if type(winner) is not int or winner not in range(1, len(rows) + 1):
-        raise ValueError(f"Thumbnail winner must be candidate 1-{len(rows)}")
-    selected = {**decision, "status": "selected", "source": source, "winner": winner, "signature": signature}
-    final = vod_dir / "renders" / "thumbnail.png"
-    with Image.open(rows[winner - 1]["render"]) as image:
-        image.save(final, optimize=True)
-    write_json(output / "selection.json", selected)
-    if source == "human":
-        write_json(output / "selection.reviewed.json", selected)
-    return final

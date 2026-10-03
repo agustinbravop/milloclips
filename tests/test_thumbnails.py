@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from milloclips.ai import AI, thumbnail_copy, thumbnail_preferences
 from milloclips.cli import main
-from milloclips.thumbnails import _contact_sheet, _game_asset, _generated_layout, _publish_candidates, _reaction, _reaction_photo, prepare_thumbnail_references, render_thumbnails, revise_thumbnail, select_thumbnail
+from milloclips.thumbnails import _contact_sheet, _game_asset, _generated_layout, _publish_candidates, _reaction, _reaction_photo, prepare_thumbnail_references, render_thumbnails, revise_thumbnail
 from milloclips.thumbnail_art import MODEL, generate_artwork, plan_artwork
 
 
@@ -44,16 +44,6 @@ class ThumbnailTests(unittest.TestCase):
             r, _g, _b, alpha = layer.getpixel((900, 300))
             self.assertEqual(r, 255)
             self.assertTrue(0 < alpha < 255)
-
-    def test_incomplete_image_review_cannot_approve_publication(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ai = AI(Path(tmp), mock=True)
-            ai.mock = False
-            result = {"winner": 1, "publishable": True, "candidates": [{"number": 1, "headline_matches": True, "extra_people": True, "publishable": True}]}
-            ai._json = lambda *_args, **_kwargs: dict(result)
-            decision = ai.choose_thumbnail([])
-            self.assertFalse(decision["publishable"])
-            self.assertTrue(decision["raw_model_output"]["publishable"])
 
     def test_revision_restores_photo_pane_and_survives_unchanged_rerenders(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -368,7 +358,7 @@ class ThumbnailTests(unittest.TestCase):
                   "text": "Tristana reset W", "reason": "Visible reset"}]
         self.assertEqual(ai.thumbnail_concepts(beats, "Tristana reset", []), [])
 
-    def test_two_candidates_use_only_final_edit_frames(self):
+    def test_one_thumbnail_uses_final_edit_frames_without_comparison(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             vod = root / "vod"
@@ -388,32 +378,23 @@ class ThumbnailTests(unittest.TestCase):
                 Image.new("RGBA", (80, 80), "red").save(faces / f"{expression}.png")
             sheet = render_thumbnails(vod, faces, ai=AI(vod, mock=True))
             render_thumbnails(vod, faces, ai=AI(vod, mock=True))
-            with Image.open(sheet) as contact:
-                self.assertEqual(contact.width, 990)
-                self.assertGreaterEqual(contact.height, 332)
             self.assertEqual(sheet.parent, vod / "renders" / "thumbnails")
             rows = json.loads((sheet.parent / "variants.json").read_text())
-            self.assertEqual(len(rows), 2)
+            self.assertEqual(len(rows), 1)
             self.assertTrue(all(row["beat_id"] in {1, 3} and Path(row["frame"]).exists() for row in rows))
             self.assertTrue((vod / "thumbnail-brief.json").exists())
             self.assertTrue((vod / "renders" / "thumbnail.png").exists())
-            self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["status"], "pending")
-            select_thumbnail(vod, 2)
-            self.assertEqual((vod / "renders" / "thumbnail.png").read_bytes(), Path(rows[1]["render"]).read_bytes())
-            render_thumbnails(vod, faces, ai=AI(vod, mock=True))
-            self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["winner"], 2)
-            with self.assertRaises(ValueError):
-                select_thumbnail(vod, 3)
-            select_thumbnail(vod, ai=AI(vod, mock=True))
-            self.assertTrue((sheet.parent / "selection.raw.json").exists())
+            selection = json.loads((sheet.parent / "selection.json").read_text())
+            self.assertEqual(selection["status"], "selected")
+            self.assertEqual(selection["source"], "generated")
+            self.assertFalse((sheet.parent / "selection.raw.json").exists())
             Image.new("RGBA", (80, 80), "blue").save(faces / "shocked.png")
             render_thumbnails(vod, faces, ai=AI(vod, mock=True))
-            self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["status"], "pending")
+            self.assertEqual(json.loads((sheet.parent / "selection.json").read_text())["status"], "selected")
             self.assertFalse((sheet.parent / "review.raw.json").exists())
-            for row in rows:
-                with Image.open(row["render"]) as rendered:
-                    self.assertEqual(rendered.size, (1280, 720))
-            with Image.open(rows[1]["render"]) as gameplay:
+            with Image.open(rows[0]["render"]) as rendered:
+                self.assertEqual(rendered.size, (1280, 720))
+            with Image.open(rows[0]["render"]) as gameplay:
                 self.assertNotEqual(gameplay.getpixel((500, 400)), gameplay.getpixel((1050, 400)))
 
     def test_reaction_selection_uses_named_expression_and_supported_extensions(self):
