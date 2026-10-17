@@ -6,18 +6,21 @@ import json
 import math
 import os
 import re
+import time
+from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 from .io import read_json, write_json
 
 
 STATES = ["OTHER", "QUEUE", "CHAMP_SELECT", "LOADING", "IN_GAME", "POST_GAME"]
 BEAT_TYPES = ["SETUP", "COMBAT", "REACTION", "STRATEGY", "FARMING", "TRAVEL", "SHOPPING", "DEAD", "RESULT"]
-SHORT_MAX_SECONDS = 90
+SHORT_MAX_SECONDS = 60
+MAX_REQUEST_IMAGES = 32
 THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal"}
 THUMBNAIL_FILLER = {"a", "al", "como", "con", "de", "el", "en", "es", "esto", "fucking", "fck", "jugué", "jugue", "la", "locura", "me", "mi", "mí", "mira", "momento", "muy", "para", "pick", "que", "rarísimo", "si", "un", "una", "va", "volando", "yo", "he", "ha", "lo", "los", "las", "este", "esta", "esto", "qué", "pero", "y"}
 THUMBNAIL_ACTOR = {"jugué", "jugue", "jugando", "me", "mi", "mí", "mío", "mio", "yo"}
@@ -48,7 +51,17 @@ class AI:
         self.model = model
         self.editorial_model = editorial_model or model
         self.mock = mock
-        self.client = None if mock else OpenAI(api_key=self._key())
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None and not self.mock:
+            self._client = OpenAI(api_key=self._key(), max_retries=0)
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        self._client = value
 
     @staticmethod
     def _key() -> str:
@@ -60,6 +73,14 @@ class AI:
     def _json(self, prompt: str, images: list[Path] | None = None, *, model: str | None = None, detail: str = "low",
               image_labels: list[str] | None = None) -> Any:
         model = model or self.model
+        if len(images or []) > MAX_REQUEST_IMAGES:
+            raise ValueError(f"Request has {len(images)} images; maximum is {MAX_REQUEST_IMAGES}")
+        request_key = hashlib.sha256(json.dumps({"prompt": prompt, "model": model, "detail": detail,
+                                                "labels": image_labels}, sort_keys=True).encode()
+                                     + b"".join(image.read_bytes() for image in images or [])).hexdigest()
+        cached_path = self.vod_dir / "requests" / f"{request_key}.json"
+        if cached_path.exists():
+            return read_json(cached_path)
         content: list[dict] = [{"type": "text", "text": prompt}]
         if image_labels is not None and len(image_labels) != len(images or []):
             raise ValueError("Each image must have exactly one label")
@@ -74,24 +95,36 @@ class AI:
                     "image_url": {"url": f"data:{mime};base64,{encoded}", "detail": detail},
                 }
             )
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": content}],
-            response_format={"type": "json_object"},
-        )
+        # Only transient rate limits get one retry; exhausted credit never does.
+        for attempt in range(2):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": content}],
+                    response_format={"type": "json_object"},
+                )
+                break
+            except RateLimitError as error:
+                if attempt or error.code in {"insufficient_quota", "credit_balance_exhausted"}:
+                    raise
+                time.sleep(2)
         usage = response.usage
         with (self.vod_dir / "usage.jsonl").open("a", encoding="utf-8") as file:
             file.write(
                 json.dumps(
                     {
                         "model": model,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "images": len(images or []),
+                        "request": request_key,
                         "input_tokens": usage.prompt_tokens if usage else None,
                         "output_tokens": usage.completion_tokens if usage else None,
                     }
                 )
                 + "\n"
             )
-        return json.loads(response.choices[0].message.content or "{}")
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        write_json(cached_path, parsed)
+        return parsed
 
     def classify_frames(self, frames: list[dict], total_duration: float) -> list[dict]:
         if self.mock:
@@ -166,7 +199,11 @@ Images appear in this order:\n""" + "\n".join(labels)
                         "Transcribe each phrase in its spoken language; never translate English into Spanish. "
                         + ", ".join(vocabulary))[:800],
             )
-        return result.model_dump()
+        transcript = result.model_dump()
+        with (self.vod_dir / "usage.jsonl").open("a", encoding="utf-8") as file:
+            file.write(json.dumps({"model": "whisper-1", "timestamp": datetime.now(UTC).isoformat(),
+                                   "audio_seconds": transcript.get("duration", duration_seconds)}) + "\n")
+        return transcript
 
     def punctuate_captions(self, words: list[dict]) -> dict:
         tokens = [str(word["word"]).strip() for word in words]
@@ -211,7 +248,8 @@ visuals alone are not useful. A scoreboard opened during gameplay is not the
 match result. Use RESULT only for a clear local payoff or the actual game ending.
 Return JSON only: {{"beats":[{{"id":0,"type":"COMBAT","importance":4,"keep":true,"reason":"brief reason"}}]}}.
 Beats:\n{json.dumps([{k: v for k, v in beat.items() if k != 'frames'} for beat in beats], ensure_ascii=False)}
-Images are grouped in beat order, three images per beat.
+Images are in beat order, one context image per beat. These stills do not prove a
+continuous fight or its outcome; use transcript/context for preliminary labels.
 """
         parsed = self._json(prompt, image_paths)
         answers = {item["id"]: item for item in parsed.get("beats", []) if isinstance(item.get("id"), int)}
@@ -241,27 +279,37 @@ Images are grouped in beat order, three images per beat.
                 key=lambda item: item["score"], reverse=True,
             )
         evidence = []
+        images, image_labels = [], []
+        per_game = min(6, MAX_REQUEST_IMAGES // len(games)) if games else 0
         for game in games:
             beats = sorted(game["beats"], key=lambda beat: beat.get("start", 0))
             highlights = sorted(beats, key=lambda beat: (bool(beat.get("keep")), beat.get("importance", 1)), reverse=True)[:18]
             anchors = [beats[round(index * (len(beats) - 1) / 11)] for index in range(12)] if beats else []
             selected = {beat["id"]: beat for beat in [*highlights, *anchors]}
+            context_frames = game.get("frames", [])[:per_game]
+            for frame in context_frames:
+                images.append(Path(frame["path"]))
+                image_labels.append(f"{game['game_id']}: gameplay context at {frame['time']:.2f}s; not continuous proof")
             evidence.append({
                 "game_id": game["game_id"],
                 "duration_seconds": game["duration"],
+                "context_frame_times": [frame["time"] for frame in context_frames],
                 "beats": [
                     {key: beat.get(key) for key in ("start", "end", "type", "importance", "keep", "text", "reason")}
                     for beat in sorted(selected.values(), key=lambda beat: beat.get("start", 0))
                 ],
             })
         parsed = self._json(
-            "Rank these League games for a coherent 9-12 minute Spanish YouTube edit. "
-            "Score each from 0 to 100 for story potential, humor/emotion, standout moments, "
-            "and editability. Prefer a clear arc and varied meaningful beats; penalize routine "
-            "or incoherent footage. Judge only supplied evidence. Return JSON only: "
+            "Pick the MOST ENTERTAINING League game for a Spanish YouTube edit, aiming around ten minutes. "
+            "Rank relative to the other supplied games: we need the best available game, not a minimum-quality gate. "
+            "Prioritize humor, surprising reversals, strong successful plays, personality, variety and enjoyable pacing. "
+            "Do not reward a coherent but repetitive downer just because it is easy to explain or fills ten minutes. "
+            "Penalize extended teammate-blaming and repeated hopeless complaints. A loss can still be funny; "
+            "a win alone is not entertainment. Poor transcription is uncertainty, not proof that the gameplay is boring. "
+            "Score each from 0 to 100 by viewing enjoyment, then story/editability. Judge only supplied evidence. Return JSON only: "
             '{"games":[{"game_id":"game-001","score":85,"reason":"specific evidence-based reason"}]}. '
             "Include every game exactly once. Evidence: " + json.dumps(evidence, ensure_ascii=False),
-            model=self.editorial_model,
+            images, model=self.editorial_model, image_labels=image_labels,
         )
         write_json(self.vod_dir / "game-ranking.raw.json", parsed)
         by_id = {game["game_id"] for game in games}
@@ -699,9 +747,12 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             ]
         path = self.vod_dir / "short-proposal-windows.json"
         answers = read_json(path).get("answers", {}) if path.exists() else {}
-        windows = [evidence[max(0, offset - 4):offset + 24] for offset in range(0, len(evidence), 20)]
+        # One cheap discovery path. Overlap keeps stories crossing a window edge intact.
+        evidence = [{key: beat[key] for key in ("id", "start", "end", "type", "text") if key in beat}
+                    for beat in evidence]
+        windows = [evidence[max(0, offset - 20):offset + 120] for offset in range(0, len(evidence), 100)]
         def signature(window):
-            return hashlib.sha256(json.dumps({"beats": window, "model": self.editorial_model, "prompt_version": 3}, sort_keys=True).encode()).hexdigest()
+            return hashlib.sha256(json.dumps({"beats": window, "model": self.model, "prompt_version": 4}, sort_keys=True).encode()).hexdigest()
         def propose(window):
             return self._json(
                 "Return JSON only. Find up to THREE DIFFERENT events in this Spanish stream window that could make a "
@@ -714,14 +765,17 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
                 "League queue/draft/chat reactions are eligible; casino/slots and other games are not. "
                 "Every moment must include meaningful Elmiillor speech, not only silent action, a grunt, "
                 "chat text or game announcer audio. Return zero if none. "
-                "Beat labels and importance may be wrong. Give the ID of the beat containing the payoff. "
+                "General opinions, draft complaints and observations are NOT automatically punchlines. Prefer a concrete "
+                "setup that actually leads to a surprising event or sharper spoken ending. Rank the best available "
+                "complete stories even when none is exceptional; do not require a minimum entertainment score. "
+                "Beat labels may be wrong. Give an entertainment score from 0 to 100 and the ID of the payoff beat. "
                 "Use one continuous scene for a play, or 2-4 chronological scenes only for a real callback. "
                 f"Each scene uses inclusive beat IDs; retain complete setup/payoff up to {SHORT_MAX_SECONDS} seconds after trimming. "
                 "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"specific event\","
                 "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
-                + json.dumps(window, ensure_ascii=False), model=self.editorial_model,
+                + json.dumps(window, ensure_ascii=False), model=self.model,
             )
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             pending = {pool.submit(propose, window): signature(window) for window in windows if signature(window) not in answers}
             for future in as_completed(pending):
                 answers[pending[future]] = future.result()
@@ -731,20 +785,9 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             proposed = answers[signature(window)].get("candidates")
             if isinstance(proposed, list):
                 candidates.extend(proposed[:3])
-        # A separate wide view may find a callback that spans several minutes.
-        parsed = self._json(
-            "Return JSON only. Find at most TWO surprising or hilarious callbacks across this stream evidence. "
-            "An actual ending must overturn or deliver on an earlier premise; no generic game recaps, "
-            "plans, or unrelated highlights. Zero is fine. Use 2-4 short chronological scenes, "
-            f"retain complete setup/payoff up to {SHORT_MAX_SECONDS} seconds after trimming, and identify the exact payoff beat. "
-            "Only League of Legends stories with meaningful streamer speech are eligible. "
-            "Return {\"candidates\":[{\"title\":\"...\",\"proposed_payoff\":\"...\","
-            "\"payoff_beat_id\":2,\"scenes\":[{\"start_beat_id\":1,\"end_beat_id\":2}]}]}. Beats:\n"
-            + json.dumps(evidence, ensure_ascii=False), model=self.editorial_model,
-        )
-        if isinstance(parsed.get("candidates"), list):
-            candidates.extend(parsed["candidates"][:2])
-        return candidates
+        unique = {json.dumps(item.get("scenes", []), sort_keys=True): item for item in candidates if isinstance(item, dict)}
+        return sorted(unique.values(), key=lambda item: item["score"] if type(item.get("score")) in (int, float)
+                      and math.isfinite(item["score"]) else 0, reverse=True)[:6]
 
     def visual_shorts(self, frames: list[dict]) -> list[dict]:
         if self.mock:
@@ -851,7 +894,10 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             "its proposed scene range. Start with real action/speech; include the complete useful reaction. "
             "Keep 1 scene for a self-contained play, or 2-4 for an arc; never pad to reach a scene count. "
             f"Keep complete spoken setup and useful outcome/reaction; up to {SHORT_MAX_SECONDS} seconds is allowed. "
-            "Do not shorten a stronger complete story to hit 20-45 seconds. Long time jumps must be self-evident from repeated "
+            "Keep the strongest complete opening line rather than an entire planning monologue; reserve room within "
+            f"{SHORT_MAX_SECONDS} seconds for the actual event, entire payoff and useful spoken reaction. "
+            "Never stop at a prediction, setup or initial exclamation when the outcome occurs later. "
+            "Long time jumps must be self-evident from repeated "
             "wording, champion identity, or visible context because no editorial time labels will be added. "
             f"Search windows: {json.dumps(proposal['scenes'], ensure_ascii=False)}. "
             f"Transcript: {json.dumps([{key: beat[key] for key in ('start', 'end', 'text') if key in beat} for beat in beats], ensure_ascii=False)}. "
@@ -873,7 +919,7 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             "Rank the strongest pair first, then worthwhile alternatives in preference order. "
             "Only select League of Legends stories with meaningful Elmiillor speech. Prefer his personality, "
             "a complete spoken premise and a satisfying spoken reaction over silent gameplay. "
-            "Longer setup/payoff is welcome up to 90 seconds when it makes the story stronger. "
+            f"Longer setup/payoff is welcome up to {SHORT_MAX_SECONDS} seconds when it makes the story stronger. "
             "A routine draft/build decision, climbing goal, unrelated tactical question, or kill banner "
             "is not an entertaining payoff by itself. Favor funny failed promises, mistakes with a "
             "spoken reaction, unusual mechanics with a humorous explanation, or a complete rant/joke. "
@@ -884,7 +930,7 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             "in order, two images per candidate. Do not reward titles or claims unsupported by evidence. "
             "An expressive facecam or vocal reaction is a bonus, not a requirement. When quality is close, "
             "prefer a varied pair such as one personality/rant clip and one gameplay/reversal clip. "
-            "Choose ZERO if none are genuinely entertaining; do not fill a quota. "
+            "Choose the best available distinct pair even if this stream is weak; report the relative tradeoffs. "
             "Return {\"selected_ids\":[0,1,2],\"reason\":\"why this pair is best and alternatives are ranked\"}. "
             "Candidate evidence (zero-based IDs): " + json.dumps(candidates, ensure_ascii=False),
             images,

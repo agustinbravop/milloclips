@@ -17,7 +17,8 @@ BEAT = {"id": 0, "start": 0.0, "end": 15.0, "phase": "IN_GAME", "type": "COMBAT"
 
 
 class FakeAI:
-    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", editorial_model: str | None = None, mock: bool = True):
+    def __init__(self, vod_dir: Path, model: str = "gpt-5-nano", editorial_model: str | None = None,
+                 mock: bool = True):
         self.vod_dir = vod_dir
         self.model = model
         self.editorial_model = editorial_model or model
@@ -40,7 +41,8 @@ def _workspace(root: Path) -> Path:
 
 
 def _arguments(source: str, root: Path) -> argparse.Namespace:
-    return argparse.Namespace(source=source, root=root, force=False, model="gpt-5-nano", editorial_model=None)
+    return argparse.Namespace(source=source, root=root, force=False, model="gpt-5-nano", editorial_model=None,
+                              skip_thumbnails=False)
 
 
 class AutoOrchestrationTests(unittest.TestCase):
@@ -53,10 +55,10 @@ class AutoOrchestrationTests(unittest.TestCase):
              patch("milloclips.cli.scan", return_value=[GAME]), \
              patch("milloclips.cli.analyze", return_value=[BEAT]), \
              patch("milloclips.cli.plan_long", return_value={}), \
-             patch("milloclips.cli.render_long", return_value=winner_dir / "renders" / "long-rough.mp4"), \
+             patch("milloclips.cli.render_long", return_value=vod_dir / "renders" / "long-rough.mp4"), \
              patch("milloclips.cli.find_vod_shorts", return_value=[{"title": "One"}]), \
              patch("milloclips.cli.render_shorts", return_value=[]), \
-             patch("milloclips.cli.render_thumbnails", return_value=winner_dir / "renders" / "thumbnails"), \
+             patch("milloclips.cli.render_thumbnails", return_value=vod_dir / "renders" / "thumbnails"), \
              patch("milloclips.cli.scan_report", return_value=vod_dir / "reports" / "scan-report.html"), \
              patch("milloclips.cli.shorts_report", return_value=vod_dir / "reports" / "short-candidates.html"):
             _auto(_arguments(str(vod_dir), root))
@@ -69,11 +71,32 @@ class AutoOrchestrationTests(unittest.TestCase):
             summary = read_json(vod_dir / "auto-summary.json")
             winner_dir = vod_dir / "game-analyses" / "game-001"
             # publish reads renders/long-rough.mp4 relative to the workspace it is given.
-            self.assertEqual(summary["workspace"], str(winner_dir))
+            self.assertEqual(summary["workspace"], str(vod_dir))
             self.assertEqual(summary["source_workspace"], str(vod_dir))
             self.assertEqual(summary["selected_game"], "game-001")
-            self.assertEqual(summary["long_video"], str(winner_dir / "renders" / "long-rough.mp4"))
-            self.assertEqual(summary["thumbnail"], str(winner_dir / "renders" / "thumbnail.png"))
+            self.assertEqual(summary["long_video"], str(vod_dir / "renders" / "long-rough.mp4"))
+            self.assertEqual(summary["thumbnail"], str(vod_dir / "renders" / "thumbnail.png"))
+
+    def test_skip_thumbnails_omits_thumbnail_stage_and_summary_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vod_dir = _workspace(root)
+            arguments = _arguments(str(vod_dir), root)
+            arguments.skip_thumbnails = True
+            winner_dir = vod_dir / "game-analyses" / "game-001"
+            winner_dir.mkdir(parents=True)
+            with patch("milloclips.cli.AI", FakeAI), patch("milloclips.cli.scan", return_value=[GAME]), \
+                 patch("milloclips.cli.analyze", return_value=[BEAT]), patch("milloclips.cli.plan_long"), \
+                 patch("milloclips.cli.render_long", return_value=winner_dir / "renders" / "long-rough.mp4"), \
+                 patch("milloclips.cli.find_vod_shorts", return_value=[]), patch("milloclips.cli.render_shorts", return_value=[]), \
+                 patch("milloclips.cli.render_thumbnails") as render_thumbnails, \
+                 patch("milloclips.cli.scan_report", return_value=vod_dir / "reports" / "scan-report.html"), \
+                 patch("milloclips.cli.shorts_report", return_value=vod_dir / "reports" / "short-candidates.html"):
+                _auto(arguments)
+            render_thumbnails.assert_not_called()
+            summary = read_json(vod_dir / "auto-summary.json")
+            self.assertIsNone(summary["thumbnail"])
+            self.assertIsNone(summary["thumbnail_contact_sheet"])
 
     def test_status_records_a_finished_stage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

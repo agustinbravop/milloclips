@@ -11,6 +11,37 @@ from .io import read_json, write_json
 from .media import sample_frames
 
 
+def prepare_stream_workspace(vod_dir: Path, game_dir: Path) -> Path:
+    """Promote selected inputs to the stream; per-game folders are analysis caches."""
+    binding = {"game_id": game_dir.name, "analysis_workspace": str(game_dir.resolve()),
+               "beats": _file_fingerprint(game_dir / "beats.json"),
+               "transcript": _file_fingerprint(game_dir / "transcript.json")}
+    previous = vod_dir / "edit-input.json"
+    if previous.exists() and read_json(previous) == binding:
+        return vod_dir
+    for path in game_dir.iterdir():
+        if not path.is_file() or path.suffix not in {".json", ".ass", ".md"}:
+            continue
+        if not (path.name.startswith(("long-", "thumbnail-", "short-transcript")) or path.name in {
+            "beats.json", "transcript.json", "transcript.reviewed.json", "pregame-transcript.json",
+            "layout.json", "layout.reviewed.json", "vocabulary.json", "thumbnail-feedback.reviewed.md",
+        } or (path.name == "short-candidates.json" and read_json(path).get("scope") == "vod")):
+            continue
+        target = vod_dir / path.name
+        if not target.exists() or target.read_bytes() != path.read_bytes():
+            shutil.copy2(path, target)
+    write_json(vod_dir / "edit-input.json", binding)
+    # One-time migration of existing deliverables. Copy, so a future render cannot
+    # modify files currently being uploaded from the former game-level directory.
+    for path in (game_dir / "renders").rglob("*"):
+        if path.is_file():
+            target = vod_dir / "renders" / path.relative_to(game_dir / "renders")
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+    return vod_dir
+
+
 def game_workspace(vod_dir: Path, game: dict) -> Path:
     """Seed the existing selected-game analysis once; leave its media caches intact."""
     output = vod_dir / "game-analyses" / game["id"]
@@ -30,14 +61,28 @@ def game_workspace(vod_dir: Path, game: dict) -> Path:
     return output
 
 
+def game_evidence(directory: Path, game: dict, beats: list[dict]) -> dict:
+    frames = sorted((directory / "frames/selected-game").glob("frame_*.jpg"))
+    highlights = sorted(beats, key=lambda beat: (beat.get("type") == "COMBAT", beat.get("importance", 1)), reverse=True)[:3]
+    first = min((beat.get("start", 0) for beat in beats), default=0)
+    images = []
+    for beat in highlights:
+        for edge in ("start", "end"):
+            if frames:
+                time = float(beat.get(edge, first))
+                index = min(len(frames) - 1, max(0, round((time - first) / 5)))
+                images.append({"time": time, "path": str(frames[index].resolve())})
+    return {"game_id": game["id"], "duration": game["duration"], "beats": beats, "frames": images}
+
+
 def rank_vod_games(vod_dir: Path, ai: AI, force: bool = False) -> tuple[list[dict], Path]:
     analyses = []
     for game in games(vod_dir):
         output = game_workspace(vod_dir, game)
         print(f"Analyzing {game['id']}", flush=True)
         beats = analyze(output, AI(output, model=ai.model, editorial_model=ai.editorial_model, mock=ai.mock), force=force)
-        analyses.append({"game_id": game["id"], "duration": game["duration"], "beats": beats})
-    signature = _fingerprint({"analyses": analyses, "model": ai.editorial_model, "ranking_version": 2})
+        analyses.append(game_evidence(output, game, beats))
+    signature = _fingerprint({"analyses": analyses, "model": ai.editorial_model, "ranking_version": 3})
     path = vod_dir / "game-ranking.json"
     cached = read_json(path) if path.exists() else {}
     ranking = cached["ranking"] if cached.get("signature") == signature and not force else ai.rank_games(analyses)
@@ -97,12 +142,24 @@ def find_vod_shorts(vod_dir: Path, ai: AI, force: bool = False, *, output_dir: P
     write_json(output / "games.json", {"games": [game]})
     select_game(output, "vod")
     beats, words, frames, coverage, events = [], [], [], [], []
+    scan_path = vod_dir / "stream-states.json"
+    scanned = read_json(scan_path).get("points", []) if scan_path.exists() else []
     for region in _vod_regions(vod_dir):
+        origin, end = region["gameplay_start"], region["gameplay_end"]
+        observed = [point for point in scanned if origin <= point["timestamp"] < end]
+        if (region["id"].startswith("context-") and len(observed) >= 2
+                and observed[0]["timestamp"] <= origin + 30 and observed[-1]["timestamp"] >= end - 30
+                and all(point["state"] == "OTHER" and point.get("confidence", 0) >= 0.8 for point in observed)
+                and not any(item["start"] - 60 < end and item["end"] + 60 > origin for item in game["league_ranges"])):
+            # Coverage includes excluded non-League footage; do not transcribe
+            # an hour of slots merely to reject it again during short judging.
+            coverage.append({"region": region["id"], "start": origin, "end": end,
+                             "excluded": "confident non-League scan", "scan": _file_fingerprint(scan_path)})
+            continue
         directory = game_workspace(vod_dir, region)
         region_ai = AI(directory, model=ai.model, editorial_model=ai.editorial_model, mock=ai.mock)
         print(f"Whole-VOD evidence: {region['id']}", flush=True)
-        local = analyze(directory, region_ai, force=force)
-        origin, end = region["gameplay_start"], region["gameplay_end"]
+        local = analyze(directory, region_ai, force=force, transcript_only=region["id"].startswith("context-"))
         for beat in local:
             if beat["start"] < 0:
                 continue
@@ -136,11 +193,13 @@ def find_vod_shorts(vod_dir: Path, ai: AI, force: bool = False, *, output_dir: P
     write_json(output / "layout.json", read_json(layout_dir / "layout.json"))
     vod_ai = AI(output, model=ai.model, editorial_model=ai.editorial_model, mock=ai.mock)
     candidates = find_shorts(output, vod_ai, force=force)
-    if len(candidates) != 2:
-        raise ValueError(f"Whole-VOD selection produced {len(candidates)} shorts; two are required")
+    if not candidates:
+        raise ValueError("Whole-VOD discovery found no source-bounded story with meaningful speech")
     write_json(output_dir / "short-candidates.json", {"scope": "vod", "workspace": str(output.resolve()),
                "signature": _file_fingerprint(output / "short-candidates.json")})
     for candidate in candidates:
         name = candidate["render_name"]
-        shutil.copy2(output / f"{name}.captions.raw.json", output_dir / f"{name}.captions.raw.json")
+        captions = output / f"{name}.captions.raw.json"
+        if captions.exists():
+            shutil.copy2(captions, output_dir / captions.name)
     return candidates

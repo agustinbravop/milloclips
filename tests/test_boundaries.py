@@ -207,7 +207,8 @@ class BoundaryTests(unittest.TestCase):
                 return [{"timestamp": start + index * interval, "path": "frame.jpg"}
                         for index in range(int((end - start) / interval))]
 
-            with patch("milloclips.editing.sample_boundary_frames", side_effect=frames) as sampling, \
+            with patch("milloclips.editing._bounded_frames", side_effect=lambda frames, *_: frames), \
+                    patch("milloclips.editing.sample_boundary_frames", side_effect=frames) as sampling, \
                     patch.object(ai, "refine_long_scene", side_effect=[{"needs_later_context": True}, complete, complete,
                                                                      {"needs_later_context": True}, complete, complete]) as requests:
                 cut = _edit_selected_short(root, ai, candidate, game, source, "tag", [], {}, {"editorial_end": 900}, [], [])
@@ -229,7 +230,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(_edit_selected_short(root, ai, candidate, game, source, "tag", [], {}, {"editorial_end": 900}, [], []), cut)
                 self.assertEqual(requests.call_count, 6)
 
-    def test_backward_expansion_dense_sampling_and_cached_decisions(self):
+    def test_backward_expansion_reuses_coarse_decisions_without_dense_rereview(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "manifest.json").write_text(json.dumps({"source": str(root / "source.mp4"), "duration": 1000}))
@@ -246,15 +247,16 @@ class BoundaryTests(unittest.TestCase):
                 return [{"timestamp": start + i * interval, "path": "frame.jpg"}
                         for i in range(int((end - start) / interval))]
 
-            with patch("milloclips.editing.sample_boundary_frames", side_effect=frames) as sampling, \
+            with patch("milloclips.editing._bounded_frames", side_effect=lambda frames, *_: frames), \
+                    patch("milloclips.editing.sample_boundary_frames", side_effect=frames) as sampling, \
                     patch.object(ai, "refine_long_scene", side_effect=[{"needs_earlier_context": True}, answer,
                                                                      {"needs_later_context": True}, answer]) as calls:
                 cuts, _hook = _refine_long_scenes(root, ai, game, beats, [scene], {"editorial_end": 900}, 0, False)
                 self.assertEqual(cuts[0]["relative_start"], 26)
                 self.assertEqual(calls.call_args_list[1].args[0]["allowed_region"][0], 0)
-                self.assertIn(0.25, [call.args[2] for call in sampling.call_args_list])
+                self.assertNotIn(0.25, [call.args[2] for call in sampling.call_args_list])
                 _refine_long_scenes(root, ai, game, beats, [scene], {"editorial_end": 900}, 0, False)
-                self.assertEqual(calls.call_count, 4)
+                self.assertEqual(calls.call_count, 2)
 
     def test_final_scene_can_inspect_cached_result_context_beyond_scanner_gameplay_end(self):
         with TemporaryDirectory() as temporary:
@@ -278,7 +280,7 @@ class BoundaryTests(unittest.TestCase):
                                     [scene], {"editorial_end": 100}, None, False, require_intro_hint=False)
                 self.assertEqual(transcribe.call_count, 1)
 
-    def test_invalid_refinement_is_reported_instead_of_rough_fallback(self):
+    def test_invalid_review_retains_best_available_source_window_with_a_note(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "manifest.json").write_text('{"source":"source.mp4","duration":100}')
@@ -286,11 +288,12 @@ class BoundaryTests(unittest.TestCase):
             ai = AI(root, mock=True)
             with patch("milloclips.editing.sample_boundary_frames", return_value=[]), \
                     patch.object(ai, "refine_long_scene", return_value={"start": 10, "end": 30}):
-                with self.assertRaisesRegex(ValueError, "needs review"):
-                    _refine_long_scenes(root, ai, {"id": "game", "gameplay_start": 0}, [{"id": 0, "start": 0, "end": 100}],
-                                        [{"start_beat_id": 0, "end_beat_id": 0, "start": 10, "end": 30}],
-                                        {"editorial_end": 100}, 0, False)
-            self.assertEqual(json.loads((root / "long-boundary-review.json").read_text())["status"], "needs_review")
+                cuts, _ = _refine_long_scenes(root, ai, {"id": "game", "gameplay_start": 0}, [{"id": 0, "start": 0, "end": 100}],
+                                            [{"start_beat_id": 0, "end_beat_id": 0, "start": 10, "end": 30}],
+                                            {"editorial_end": 100}, 0, False)
+            self.assertEqual((cuts[0]["source_start"], cuts[0]["source_end"]), (8, 33))
+            self.assertTrue(cuts[0]["boundary_note"])
+            self.assertTrue(json.loads((root / "long-boundary-review.json").read_text())["notes"])
 
     def test_budget_revision_preserves_approved_ranges_and_required_premise(self):
         with TemporaryDirectory() as temporary:
@@ -313,8 +316,10 @@ class BoundaryTests(unittest.TestCase):
                     patch("milloclips.editing._apply_long_intro", side_effect=lambda _root, _ai, plan, *_args: {**plan, "intro_policy_version": 1}), \
                     patch.object(ai, "plan_long", side_effect=[initial, revised]):
                 plan = plan_long(root, ai)
-                self.assertEqual([(s["source_start"], s["source_end"]) for s in plan["segments"]], [(0, 400), (1000, 1200)])
-                self.assertEqual(plan["duration"], 627.5)
+                self.assertEqual([(s["source_start"], s["source_end"]) for s in plan["segments"]], [(25, 400), (1000, 1200)])
+                self.assertEqual(plan["intro"]["source_start"], 0)
+                self.assertEqual(plan["intro"]["source_end"], 25)
+                self.assertEqual(plan["duration"], 617.5)
                 broken = copy.deepcopy(revised)
                 broken["scenes"] = [broken["scenes"][-1]]
                 with patch.object(ai, "plan_long", side_effect=[initial, broken]), self.assertRaisesRegex(ValueError, "required premise"):

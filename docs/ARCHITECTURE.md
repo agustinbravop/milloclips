@@ -27,19 +27,22 @@ workspace/<vod-id>/
   game-ranking.json        cached all-game comparison
   status.json              auto stage, success/error, source workspace
   auto-summary.json        output paths; workspace field identifies the edit directory
-  game-analyses/<game-id>/  isolated game analysis and selected edit outputs
+  renders/                 canonical final videos and thumbnail for this stream
+  edit-input.json          selected analysis cache and its input fingerprints
+  game-analyses/<game-id>/  isolated internal game analysis caches
   vod-shorts/              whole-VOD short evidence, judgment, and cut decisions
 ```
 
 `rank-games` caches each game's analysis, ranks all games, selects the winner, and
-prints its edit workspace. `auto` then writes the long edit, thumbnail, and the
-independently selected whole-VOD shorts into that workspace. Uncovered source
-footage is analyzed in ten-minute regions; evidence coverage remains continuous.
+prints its internal analysis workspace. `auto` promotes selected inputs to the
+stream workspace and writes all deliverables into `workspace/<vod-id>/renders/`.
+Uncovered source footage is transcribed in ten-minute regions without a redundant
+visual beat-classification pass; evidence coverage remains continuous.
 
 ### Edit-stage artifacts
 
 Standalone selected-game stages can also write these into the original VOD
-workspace. In an `auto` run, they live in `game-analyses/<selected-game>/`;
+workspace. In an `auto` run, selected inputs and final plans live at stream level;
 whole-VOD short decisions live in `vod-shorts/`, linked from the edit directory.
 
 ```text
@@ -101,6 +104,12 @@ timestamps. Model names are configuration, never embedded in artifact logic.
 `milloclips/league_glossary.json` is the shared League vocabulary source.
 Per-VOD terms take priority when building Whisper's size-limited prompt.
 
+Text/vision requests allow at most 32 images, with event anchors retained when
+subsampling. Exhausted credit is never retried; transient rate limits allow one
+retry. `requests/<content-hash>.json` reuses identical raw responses, and
+`usage.jsonl` records request identity, timestamps, image counts and token usage.
+The separate thumbnail image-reservation budget remains in force.
+
 ## Cache and reviewed corrections
 
 Matching stage artifacts and validated render sidecars are reused. Interrupted
@@ -124,7 +133,9 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
 ## Editing Rules
 
 - Horizontal output prefers 10-12 minutes when meaningful content supports it,
-  with a 540-720 second acceptance range including intro and cards, and centers on one game.
+  and centers on the most entertaining available game. It targets 540-720 seconds
+  including cards but does not discard a shorter, source-bounded story to satisfy
+  an entertainment floor. Repeated complaints are not preferred over humor or play.
 - Code enforces duration; models rank and classify beats.
 - Mechanical deletion targets silent travel, routine farming, shopping, and
   respawn time, but preserves meaningful dialogue and event setup.
@@ -145,23 +156,28 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
   on that Nexus/result beat rather than post-game review.
 - Long-form selection keeps adjacent story units separate and never pads them to a
   footage target or unconditionally inserts pregame. A cached event-location pass
-  uses 2s decoded samples with 20s surrounding context; it may expand once by 30s
-  when setup/outcome is missing. A precise pass inspects +/-3s around EACH entry/exit
-  at 0.25s spacing (one retry at +/-6s). Decisions include action, outcome, reaction
+  uses a bounded overview of decoded samples with surrounding context; it may
+  expand once when setup/outcome is missing. Word-safe arithmetic replaces the
+  default dense paid re-review. Decisions include action, outcome, reaction
   and optional recall/shop/travel/wait anchors with frame/quote evidence.
   A scene may retain 1-6 chronological ranges to omit internal downtime.
   Start before action with necessary approach/premise; exit at recall onset or
   Arena between-round downtime after outcome and useful dialogue complete.
   Code protects words, checks continuing speech, and revalidates anchors, bounds,
-  dense windows and non-overlap after adjustment. Invalid decisions require review,
-  never silently restore the rough range. Reviewed corrections remain separate and
+  source bounds and non-overlap after adjustment. An unresolved review retains the
+  selected source window with an explicit boundary note instead of discarding the
+  stream. Reviewed corrections remain separate and
   bind to both input metadata and the fingerprint of the raw scene answer.
   Once cuts are approved, budgeting can request one cached global selection revision
   to add/remove optional complete story units, preserving required premise, ending,
-  cold-open scene and retained boundaries. If still outside 540-720s it requires review.
+  cold-open scene and retained boundaries. Thin material yields its best available
+  shorter edit; the 720-second upper bound remains enforced.
   Model, boundary prompt version, source, beats and transcript fingerprints invalidate
   editorial caches without redownloading or retranscribing media.
-- The actual final fight/result remains in the edit. An independently cached intro
+- The actual final fight/result remains in the edit. The default introduction is
+  the complete opening premise from the approved story, retained once and split
+  at a source-word boundary. This avoids separate intro proposal, verification
+  and duration-rebuild calls. Historical optional intro artifacts support a cached intro
   pass chooses relevant champion-select/early-game setup (8-40s, up to four cuts)
   or a complete successful cool play by ElmilloR (5-20s, one cut). Cold opens require
   his own visible success: deaths, blunders, failed predictions and teammate-only
@@ -199,47 +215,28 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
   with meaningful streamer speech. Slots/other games, silent gameplay and game
   announcer lines are excluded before judgment. Verified speech must match a complete
   non-corrupt transcript phrase, and construction must preserve that phrase.
-- Short discovery proposes events from all selected-game beats and runs a coarse
-  visual scout across the entire VOD. A second pass uses transcript-health
-  ranges to connect earlier spoken claims to later visible reversals. Per-game reviewed exclusions keep completed or
-  rejected moments out of a fresh discovery run without changing raw evidence.
-  Code checks spoken phrases against cached word timings and checks visual
-  claims against sampled frame times; the model judges what the images depict.
-  Fast hooks and tight payoff placement guide editing, rather than setting hard cut points.
-  Verification checks factual support and a complete premise/outcome, not entertainment
-  or the opening of a rough search window. A single Nano judge compares supported source
-  moments before precise editing, ranking the best pair followed by worthwhile alternatives.
-  Only ranked picks are refined, stopping after two distinct edits. Input-matched complete
-  long-video events are reused when available; otherwise the shared locator inspects context
-  and expands it when setup or resolution is missing, followed by dense quarter-second
-  boundary inspection. Every image is labeled with its index/time beside that image;
-  frame-index answers bind to the exact ordered input frame list before conversion to times.
-  Raw decisions remain cached separately from constructed boundaries. The editor preserves
-  complete choice explanations and continues combat through the resolved encounter, not
-  merely a death/punchline; death and spectating are not automatic downtime cuts.
-  Short construction joins phases of the same encounter, protects speech, completes dialogue
-  already underway at the result and omits renewed post-game talk. It can remove surplus
-   pre-action lead at inspected/speech-safe boundaries to fit 90 seconds without cutting action.
-  A final encounter may reuse the same bounded 15-second result tail and cached speech as
-  long-form. `edit_end` binds output validation to that bounded context, not a later match.
-  Construction errors feed back into the same selected event with bounded repair attempts.
-  If repair remains incomplete, the run stops with its selection intact
-  and an actionable status, rather than silently discarding a pick or writing a partial pair.
-  There is no finished-cut editorial audit. Accepted stories have one to four chronological
-   scenes and are hard-limited to 8-90 seconds. Complete setup and useful spoken
-   reaction take priority over making a shorter clip; idle footage is not padding.
-   The final cut retains three additional seconds for reaction, completing any
-   sentence underway at the exit within the same game's bounded source footage.
-  Shorts reuse long-form word-boundary protection and speech-completion checks, plus cached
-  transcripts, frames and evidence matching. Refinement preserves the selected premise and
-  completes useful reactions. The judge can recommend zero, one or multiple ranked moments;
-  unsupported stories are never forced into output. Verification, judging and
-  cutting have separate cache versions, preserving discovery and media on prompt changes.
-  A new discovery run does not silently reuse old reviewed story selections.
+- Short discovery uses one text-led path over the entire VOD, with the cheaper
+  analysis model. Cached overlapping windows each nominate their best complete
+  stories; at most six reach factual review. There is no extra global callback or
+  full-VOD visual-scout pass. Multi-scene callbacks remain eligible through the
+  same discovery path. Bounded candidate images establish what actually happened.
+  Meaningful streamer speech, complete setup, actual outcome and spoken reaction
+  are required; general remarks are not automatically punchlines.
+  A single editorial comparison ranks the best available supported pair. Empty
+  entertainment recommendations do not discard otherwise supported stories.
+  The verifier already provides complete cuts: there is no second paid re-edit.
+  Code retains the entire payoff phrase (`payoff_end`), not just its starting
+  anchor, and adds about three seconds for reaction, finishing active speech.
+  One to four chronological segments must fit **8-60 seconds total** including
+  all setup, payoff and reaction; a longer complete story is skipped, not truncated.
+  Source bounds, non-overlap, speech evidence and full payoff retention remain
+  hard invariants. Quality is relative to the source, not a minimum score gate.
+  Whole-VOD evidence and raw reviews remain cached separately from corrections.
 - A multi-scene short uses hard cuts and only self-evident chronological jumps.
   Captions contain dialogue only. Spanish speech may contain English phrases/gaming terms;
   transcription and caption formatting preserve each word's spoken language, never translate.
-  A cached punctuation pass runs before caption chunking. Its punctuation/case is aligned to
+  Caption chunking normally uses cached source words locally. An existing optional
+  punctuation correction is aligned to
   source words with original timings; inserted, removed or translated model words never replace
   the source dialogue. Known inverted-mark spans receive closing punctuation, and this style
    omits opening `¡`/`¿`. Reviewed caption corrections remain separate and take precedence.
@@ -266,7 +263,7 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
 
 The thumbnail stage uses approved YouTube examples from
 `assets/thumbnails/references.json` as a cached visual reference library.
-`thumbnail-brief.json` contains three evidence-backed concepts; Nano produces a
+`thumbnail-brief.json` contains one evidence-backed concept; the configured model produces a
 cached narrative art direction and exact foreground-asset placement per concept.
 `gpt-image-2.5-sunburst` edits a photo/icon placement template at 1536x864 into a
 finished image in one call per candidate. Style-reference photos stay with Nano;

@@ -43,8 +43,9 @@ YouTube API upload compliance audit are separate processes.
 
 ## First real test: one reviewed long video
 
-Use the selected edit directory: `auto-summary.json`'s **workspace** field,
-usually `workspace/<vod-id>/game-analyses/<selected-game>`.
+Use the stream directory: `auto-summary.json`'s **workspace** field is
+`workspace/<vod-id>`. Its `renders/` contains the final deliverables; per-game
+directories are internal analysis caches.
 
 ```bash
 uv run milloclips publish "<edit-directory>" --upload --clip long --approve

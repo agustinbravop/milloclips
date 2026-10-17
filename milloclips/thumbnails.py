@@ -269,7 +269,9 @@ def _selected_frames(vod_dir: Path, plan: dict) -> tuple[list[dict], dict[int, P
     beats = [beat for beat in beats_data["beats"] if beat["id"] in set(plan["selected_ids"])]
     if not beats:
         raise ValueError("The long plan has no selected beats for thumbnail evidence")
-    frames = sorted((vod_dir / "frames" / "selected-game").glob("frame_*.jpg"))
+    inputs = vod_dir / "edit-input.json"
+    analysis_dir = Path(read_json(inputs)["analysis_workspace"]) if inputs.exists() else vod_dir
+    frames = sorted((analysis_dir / "frames" / "selected-game").glob("frame_*.jpg"))
     if not frames:
         raise FileNotFoundError("Missing cached selected-game frames")
     interval = float(beats_data.get("target_beat_seconds", 15)) / 3
@@ -309,7 +311,7 @@ def _brief(vod_dir: Path, plan: dict, beats: list[dict], frames: dict[int, Path]
     ordered = sorted(beats, key=lambda beat: beat.get("importance", 0), reverse=True)
     # Include the spoken build/pick premise, not only high-importance fights.
     evidence = ordered[:12]
-    evidence += [beat for beat in beats if beat not in evidence and beat.get("type") in {"STRATEGY", "SETUP", "REACTION"}][:12]
+    evidence += [beat for beat in beats if beat not in evidence and beat.get("type") in {"STRATEGY", "SETUP", "REACTION"}][:4]
     concepts = ai.thumbnail_concepts(evidence, plan.get("story", ""), [frames[beat["id"]] for beat in evidence], force=force, references=references, reactions=reactions) if ai else []
     concepts = [concept for concept in concepts if concept.get("beat_id") in frames and concept.get("template") in {"action", "identity", "strategy"}]
     if not concepts:
@@ -467,4 +469,3 @@ def revise_thumbnail(vod_dir: Path, candidate: int, edit: str, ai: AI, headline:
 def _signature(rows: list[dict]) -> str:
     return hashlib.sha256(b"".join(Path(row["render"]).read_bytes() for row in rows)
                           + json.dumps(rows, sort_keys=True).encode()).hexdigest()
-

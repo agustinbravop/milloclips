@@ -171,6 +171,27 @@ class PublishTests(unittest.TestCase):
             self.assertEqual(vod["long"]["duration"], 0.2)
             self.assertTrue((site / "static" / "media" / "udyr-sin-freno-long.mp4").exists())
 
+    def test_publishes_without_generated_thumbnail_using_video_frame(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            site, vod_dir = root / "website", root / "workspace" / "7ecad9c2b4a0"
+            vod_dir.mkdir(parents=True)
+            catalog_path = _write_catalog(site)
+            _write_workspace(vod_dir)
+            (vod_dir / "renders" / "thumbnail.png").unlink()
+            render = vod_dir / "renders" / "long-rough.mp4"
+            run_ffmpeg(["-f", "lavfi", "-i", "color=black:s=1280x720:r=30:d=0.2",
+                        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(render)])
+
+            with patch("milloclips.publish._poster", side_effect=lambda video, image: Image.new("RGB", (8, 8)).save(image)):
+                publish(vod_dir, site, approve=True)
+
+            vod = read_json(catalog_path)["vods"][0]
+            self.assertEqual(vod["long"]["title"], "Chill gaming")
+            self.assertEqual(vod["long"]["poster"], "/images/chill-gaming-long.jpg")
+            self.assertTrue((site / "static" / "images" / "chill-gaming-long.jpg").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

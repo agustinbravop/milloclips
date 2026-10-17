@@ -17,7 +17,7 @@ from .media import ingest, vod_directory
 from .publish import publish, publish_confirmed
 from .reports import scan_report, shorts_report
 from .scan import scan
-from .pipeline import find_vod_shorts, game_workspace, rank_vod_games
+from .pipeline import find_vod_shorts, game_workspace, game_evidence, rank_vod_games, prepare_stream_workspace
 from .editing import _fingerprint
 from .thumbnails import prepare_thumbnail_references, render_thumbnails, revise_thumbnail
 
@@ -59,6 +59,8 @@ def parser() -> argparse.ArgumentParser:
     auto.add_argument("--force", action="store_true", help="Refresh analysis, ranking, edit plans, and thumbnail concepts; reuse downloaded media, matching transcripts, and unchanged paid images")
     auto.add_argument("--model", default="gpt-5-nano", help="Frame/beat analysis model (default: gpt-5-nano)")
     auto.add_argument("--editorial-model", help="Ranking, editing, and thumbnail decisions model (default: --model)")
+    auto.add_argument("--skip-thumbnails", action="store_true", help="Skip thumbnail concepts and image generation for this run")
+    auto.add_argument("--mock", action="store_true", help="Run the complete cached workflow with synthetic AI; no paid calls")
 
     vods = command("vods", "List available Kick VODs without downloading media",
         "Queries Kick; prints dates, durations, titles, and URLs. No AI key required.\n"
@@ -124,29 +126,29 @@ def parser() -> argparse.ArgumentParser:
 
     long_render = command("render-long", "Render the 1280x720 long edit with audio and cards",
         "Requires a current long-plan.json from plan-long and the local source.\nWrites renders/long-rough.mp4 and its validation sidecar; new renders also\ngenerate the transition reel. Reuses a matching render. No AI calls.",
-        "  uv run milloclips render-long workspace/VOD/game-analyses/game-001")
+        "  uv run milloclips render-long workspace/VOD")
     long_render.add_argument("vod_dir", type=Path, help="Selected edit workspace containing long-plan.json")
 
     long_review = command("render-long-review", "Render a reel of the long edit's transitions",
         "Requires renders/long-rough.mp4 and its long-plan.json. Writes\nrenders/long-transitions.mp4 and long-review.json, with eight seconds around\neach join. This creates review material; it does not approve the video. No AI calls.",
-        "  uv run milloclips render-long-review workspace/VOD/game-analyses/game-001")
+        "  uv run milloclips render-long-review workspace/VOD")
     long_review.add_argument("vod_dir", type=Path, help="Edit workspace containing the rendered long video and its plan")
 
     short_render = command("render-short", "Render one selected short at 1080x1920 with captions",
         "Requires find-shorts first and the local source. Writes renders/short-NN.mp4,\nits validation sidecar, and a refreshed short report; reuses a matching render.\n--candidate-index is zero-based: 0 is the first selected short, usually short-01.\nUses cached caption formatting or original transcript words. No AI calls.",
-        "  uv run milloclips render-short workspace/VOD/game-analyses/game-001 --candidate-index 0\n"
-        "  uv run milloclips render-short workspace/VOD/game-analyses/game-001 --candidate-index 1")
+        "  uv run milloclips render-short workspace/VOD --candidate-index 0\n"
+        "  uv run milloclips render-short workspace/VOD --candidate-index 1")
     short_render.add_argument("vod_dir", type=Path, help="Output workspace containing short-candidates.json")
     short_render.add_argument("--candidate-index", type=int, default=0, help="Zero-based selected candidate index; 0 = first, 1 = second (default: 0)")
 
     render_all_shorts = command("render-shorts", "Render all selected shorts with captions",
         "Requires find-shorts first. Writes validated renders/short-NN.mp4 files\nand refreshes the short report; matching renders are reused. Uses cached\ncaption formatting or original transcript words. No AI calls or uploads.",
-        "  uv run milloclips render-shorts workspace/VOD/game-analyses/game-001")
+        "  uv run milloclips render-shorts workspace/VOD")
     render_all_shorts.add_argument("vod_dir", type=Path, help="Output workspace containing short-candidates.json")
 
     thumbnails = command("thumbnails", "Generate or revise a long-video thumbnail",
         "Generation requires the long plan, beats, face assets, and OPENAI_API_KEY.\nWrites one renders/thumbnails/thumbnail.png and renders/thumbnail.png.\n--revise makes a paid image edit; --feedback saves human notes;\n--prepare-references only downloads reference thumbnails.",
-        "  uv run milloclips thumbnails workspace/VOD/game-analyses/game-001")
+        "  uv run milloclips thumbnails workspace/VOD")
     thumbnails.add_argument("vod_dir", type=Path, help="Selected edit workspace; --prepare-references still requires this positional path")
     thumbnails.add_argument("--faces", type=Path, default=Path("assets/faces"), help="Reusable reaction photos and framing metadata (default: assets/faces)")
     thumbnails.add_argument("--force", action="store_true", help="Refresh concepts; reuse downloaded references/assets and unchanged paid image requests")
@@ -231,7 +233,8 @@ def _auto(arguments: argparse.Namespace) -> Path:
     try:
         if first_stage == "ingest":
             ingest(arguments.source, arguments.root)
-        ai = AI(vod_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+        ai = AI(vod_dir, model=arguments.model, editorial_model=arguments.editorial_model,
+                mock=getattr(arguments, "mock", False))
         scan(vod_dir, ai, force=arguments.force)
         games_found = games(vod_dir)
         record_run(vod_dir, "scan", model=ai.model)
@@ -243,48 +246,51 @@ def _auto(arguments: argparse.Namespace) -> Path:
         for game in games_found:
             stage(f"analyze:{game['id']}")
             game_dir = game_workspace(vod_dir, game)
-            game_ai = AI(game_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+            game_ai = AI(game_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=ai.mock)
             beats = analyze(game_dir, game_ai, force=arguments.force)
             record_run(game_dir, "analyze", model=game_ai.model)
-            analyses.append({"game_id": game["id"], "duration": game["duration"], "beats": beats})
+            analyses.append(game_evidence(game_dir, game, beats))
 
         stage("rank-games")
         ranking_path = vod_dir / "game-ranking.json"
-        ranking_signature = _fingerprint({"analyses": analyses, "model": ai.editorial_model, "ranking_version": 2})
+        ranking_signature = _fingerprint({"analyses": analyses, "model": ai.editorial_model, "ranking_version": 3})
         cached_ranking = read_json(ranking_path) if ranking_path.exists() else {}
         ranking = cached_ranking["ranking"] if not arguments.force and cached_ranking.get("signature") == ranking_signature else ai.rank_games(analyses)
         write_json(ranking_path, {"signature": ranking_signature, "ranking": ranking})
         winner_id = ranking[0]["game_id"]
         winner_dir = vod_dir / "game-analyses" / winner_id
         select_game(vod_dir, winner_id)
-        game_ai = AI(winner_dir, model=arguments.model, editorial_model=arguments.editorial_model)
+        edit_dir = prepare_stream_workspace(vod_dir, winner_dir)
+        game_ai = AI(edit_dir, model=arguments.model, editorial_model=arguments.editorial_model, mock=ai.mock)
 
         stage("plan-long")
-        plan_long(winner_dir, game_ai, force=arguments.force)
-        record_run(winner_dir, "plan-long", model=game_ai.model)
+        plan_long(edit_dir, game_ai, force=arguments.force)
+        record_run(edit_dir, "plan-long", model=game_ai.model)
         stage("render-long")
-        long_video = render_long(winner_dir)
-        record_run(winner_dir, "render-long")
-        transition_reel = winner_dir / "renders" / "long-transitions.mp4"
-        record_run(winner_dir, "render-long-review")
+        long_video = render_long(edit_dir)
+        record_run(edit_dir, "render-long")
+        transition_reel = edit_dir / "renders" / "long-transitions.mp4"
+        record_run(edit_dir, "render-long-review")
         stage("find-shorts")
-        candidates = find_vod_shorts(vod_dir, ai, force=arguments.force, output_dir=winner_dir)
-        record_run(winner_dir, "find-shorts", model=f"{game_ai.model}+{game_ai.editorial_model}")
+        candidates = find_vod_shorts(vod_dir, ai, force=arguments.force, output_dir=edit_dir)
+        record_run(edit_dir, "find-shorts", model=f"{game_ai.model}+{game_ai.editorial_model}")
         stage("render-shorts")
-        shorts = render_shorts(winner_dir)
-        short_report = shorts_report(winner_dir)
-        record_run(winner_dir, "render-shorts")
-        stage("thumbnails")
-        thumbnail = render_thumbnails(winner_dir, Path("assets/faces"), arguments.force, game_ai)
-        record_run(winner_dir, "thumbnails", model=f"{game_ai.model}+{game_ai.editorial_model}")
+        shorts = render_shorts(edit_dir)
+        short_report = shorts_report(edit_dir)
+        record_run(edit_dir, "render-shorts")
+        thumbnail = None
+        if not arguments.skip_thumbnails:
+            stage("thumbnails")
+            thumbnail = render_thumbnails(edit_dir, Path("assets/faces"), arguments.force, game_ai)
+            record_run(edit_dir, "thumbnails", model=f"{game_ai.model}+{game_ai.editorial_model}")
         outputs = {
-            "source_workspace": str(vod_dir), "workspace": str(winner_dir), "selected_game": winner_id,
+            "source_workspace": str(vod_dir), "workspace": str(edit_dir), "selected_game": winner_id,
             "scan_report": str(game_report), "ranking": str(vod_dir / "game-ranking.json"),
             "long_video": str(long_video),
             "transition_review": str(transition_reel), "short_candidates": len(candidates),
             "shorts": [str(path) for path in shorts], "short_report": str(short_report),
-            "thumbnail": str(winner_dir / "renders" / "thumbnail.png"),
-            "thumbnail_contact_sheet": str(thumbnail),
+            "thumbnail": str(edit_dir / "renders" / "thumbnail.png") if thumbnail else None,
+            "thumbnail_contact_sheet": str(thumbnail) if thumbnail else None,
         }
         write_json(vod_dir / "auto-summary.json", outputs)
         status.update(ok=True)
@@ -375,6 +381,10 @@ def main() -> None:
         return
 
     vod_dir = arguments.vod_dir
+    if arguments.command.startswith("render-") and vod_dir.parent.name == "game-analyses":
+        source_dir = vod_dir.parent.parent
+        select_game(source_dir, vod_dir.name)
+        vod_dir = prepare_stream_workspace(source_dir, vod_dir)
     if arguments.command == "select":
         print(select_game(vod_dir, arguments.game_id)["id"])
         return

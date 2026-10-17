@@ -22,7 +22,9 @@ for the current real run. Optimize for fast learning before production polish.
 - Cache each stage; prompt changes must not redownload or retranscribe media.
 - Keep raw model output separate from reviewed corrections.
 - Rank all detected games before choosing the long-form game. Discover and judge shorts independently across the entire VOD, including between-game footage.
-- For now, shorts must be League of Legends moments with meaningful Elmiillor speech. Exclude slots/other games and silent gameplay. Allow up to 90 seconds for complete setup, outcome and spoken reaction.
+- For now, shorts must be League of Legends moments with meaningful Elmiillor speech. Exclude slots/other games and silent gameplay. Allow up to 60 seconds including complete setup, outcome and spoken reaction.
+- Prefer the most entertaining available game and moments, not merely coherent footage that clears a score threshold. Reviews guide selection; weak material should still yield the best source-bounded edit available.
+- Final deliverables belong to `workspace/<vod-id>/renders/`; per-game directories are internal analysis caches.
 - Leave about three seconds after a short's final event for streamer reaction, finishing any spoken sentence. Render captions without exclamation marks or periods; preserve question marks.
 - Do not build queues, a vector database, or automatic publishing.
 - Upgrade a model only after a reviewed Nano-vs-stronger-model comparison.

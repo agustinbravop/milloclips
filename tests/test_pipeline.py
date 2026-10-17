@@ -104,6 +104,8 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(original["relative_end"], 10)
         self.assertEqual(_extend_short_payoff(original, [], 100, 20)["relative_end"], 13)
         self.assertEqual(_extend_short_payoff(original, [], 100, 12)["relative_end"], 12)
+        already_complete = {**original, "source_end": 115, "relative_end": 15, "duration": 15, "payoff_end": 10}
+        self.assertEqual(_extend_short_payoff(already_complete, [], 100, 30)["relative_end"], 15)
 
     def test_rendered_caption_punctuation_removes_exclamations_and_periods_only(self) -> None:
         font = ImageFont.truetype(str(Path(__file__).parents[1] / "milloclips/fonts/Montserrat-Black.ttf"), 60)
@@ -166,11 +168,11 @@ class EditingTests(unittest.TestCase):
         self.assertIsNone(_meaningful_streamer_speech({"kind": "speech", "time": 0, "quote": "Oh my god"}, words, [(0, 6)], []))
         self.assertIsNone(_meaningful_streamer_speech(None, words, [(0, 6)], []))
 
-    def test_short_duration_allows_complete_ninety_second_story(self) -> None:
-        candidate = {"source_start": 0, "source_end": 90, "relative_start": 0, "relative_end": 90, "duration": 90}
+    def test_short_duration_allows_complete_sixty_second_story(self) -> None:
+        candidate = {"source_start": 0, "source_end": 60, "relative_start": 0, "relative_end": 60, "duration": 60}
         self.assertEqual(_validate_short_candidates([candidate], 0, 100, 100), [candidate])
-        with self.assertRaisesRegex(ValueError, "90 seconds"):
-            _validate_short_candidates([{**candidate, "source_end": 91, "relative_end": 91, "duration": 91}], 0, 100, 100)
+        with self.assertRaisesRegex(ValueError, "60 seconds"):
+            _validate_short_candidates([{**candidate, "source_end": 61, "relative_end": 61, "duration": 61}], 0, 100, 100)
 
     def test_word_safe_exit_handles_overlapping_transcript_words(self) -> None:
         words = [{"start": 1, "end": 2}, {"start": 1.9, "end": 2.4}, {"start": 2.4, "end": 3}]
@@ -193,7 +195,7 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(ai._json.call_args.kwargs["image_labels"],
                          ["Source image at 12 seconds", "Source image at 22 seconds"])
 
-    def test_short_callback_does_not_replace_elmiillor_cold_open(self) -> None:
+    def test_short_callback_does_not_replace_the_long_opening_premise(self) -> None:
         beats = [
             {"id": 8, "start": 0, "end": 20, "phase": "IN_GAME", "importance": 5, "keep": True},
             {"id": 9, "start": 20, "end": 40, "phase": "IN_GAME", "importance": 5, "keep": True},
@@ -207,7 +209,7 @@ class EditingTests(unittest.TestCase):
                         "selected_ids": [8, 9], "cold_open_beat_id": 8, "story": "test"}
 
         def refine(_directory, _ai, _game, _beats, _scenes, _cache, cold_open_beat_id, _force):
-            self.assertEqual(cold_open_beat_id, 8)
+            self.assertIsNone(cold_open_beat_id)
             return ([{"source_start": 100, "source_end": 650}],
                     {"source_start": 110, "source_end": 118, "relative_start": 10, "relative_end": 18})
 
@@ -223,7 +225,9 @@ class EditingTests(unittest.TestCase):
             directory = Path(temporary)
             (directory / "short-candidates.json").write_text("{}")
             (directory / "manifest.json").write_text(json.dumps({"source": "source.mp4", "duration": 700}))
-            plan_long(directory, FakeAI(), force=True)
+            plan = plan_long(directory, FakeAI(), force=True)
+            self.assertEqual(plan["intro"]["kind"], "setup")
+            self.assertEqual(plan["intro"]["source_start"], 100)
 
     def test_long_prompt_requires_elmiillor_as_cold_open_subject(self) -> None:
         ai = AI(Path("."), mock=True)
@@ -279,6 +283,11 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(scenes[-1]["end_beat_id"], 59)
         self.assertIn("actual final fight", scenes[-1]["purpose"])
 
+        ending = {"start_beat_id": 50, "end_beat_id": 56, "purpose": "resolved defeat and reaction", "required": True}
+        scenes = _long_scene_ranges(beats, {"scenes": [ending]})
+        self.assertEqual(scenes[-1]["end_beat_id"], 56)
+        self.assertTrue(scenes[-1]["final_scene"])
+
     def test_render_long_skips_ffmpeg_when_the_sidecar_still_proves_the_render(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -331,7 +340,7 @@ class EditingTests(unittest.TestCase):
             (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
             stat = source.stat()
             (directory / "short-candidates.json").write_text(json.dumps({
-                "version": 8, "output_version": 20, "evidence_version": 7, "cuts_version": 10, "callback_version": 2,
+                "version": 8, "output_version": 21, "evidence_version": 7, "cuts_version": 10, "callback_version": 2,
                 "exclusions": [], "game_id": "game-001", "gameplay_start": 10, "editorial_end": 100,
                 "transcript_edits": {"transcript.reviewed.json": None, "short-transcript.json": None,
                                     "short-transcript.reviewed.json": None},
@@ -513,7 +522,7 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(ai.seen[0]["importance"], 1)
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0]["title"], "Actual payoff")
-            self.assertEqual(candidates[0]["duration"], 52)
+            self.assertEqual(candidates[0]["duration"], 51)
             self.assertEqual([segment["source_start"] for segment in candidates[0]["segments"]], [101, 142, 182])
             self.assertEqual(json.loads((directory / "short-proposals.json").read_text())["version"], 8)
             self.assertEqual(len(ai.seen_candidates), 1)
@@ -524,12 +533,12 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(find_shorts(directory, ai), candidates)
             self.assertEqual(ai.short_calls, 2)
             ai.choose_shorts = lambda _candidates, _images: []
-            self.assertEqual(find_shorts(directory, ai, force=True), [])
+            self.assertEqual(find_shorts(directory, ai, force=True)[0]["title"], "Actual payoff")
             (directory / "short-exclusions.reviewed.json").write_text(json.dumps({"game_id": "game-002", "ranges": [{"start": 0, "end": 20}]}))
             self.assertEqual(find_shorts(directory, ai), [])
             self.assertEqual(len(ai.seen), len(beats) - 2)
 
-    def test_short_judge_precedes_editing_and_repairs_its_selected_pair(self) -> None:
+    def test_short_judge_uses_verified_complete_cuts_without_another_paid_edit(self) -> None:
         class FakeAI:
             events = []
             short_calls = 0
@@ -582,11 +591,11 @@ class EditingTests(unittest.TestCase):
             ai = FakeAI()
             result = find_shorts(directory, ai)
             self.assertEqual(ai.asserted_titles, ["0", "2", "4"])
-            self.assertEqual(ai.events, ["judge", "2", "2", "0"])
+            self.assertEqual(ai.events, ["judge"])
             self.assertEqual([item["title"] for item in result], ["2", "0"])
             self.assertEqual([item["render_name"] for item in result], ["short-01", "short-02"])
             self.assertEqual(find_shorts(directory, ai), result)
-            self.assertEqual(ai.events, ["judge", "2", "2", "0"])
+            self.assertEqual(ai.events, ["judge"])
             for name in ("short-verdicts.json", "short-candidates.json"):
                 path = directory / name
                 cached = json.loads(path.read_text())
@@ -595,28 +604,25 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(find_shorts(directory, ai), result)
             self.assertEqual(ai.short_calls, 1)
             self.assertEqual(ai.verify_calls, 8)
-            with patch.object(ai, "refine_short", return_value={"reject": True, "reason": "Need more evidence"}):
-                with self.assertRaisesRegex(ValueError, "Selection was preserved"):
-                    find_shorts(directory, ai, force=True)
-            self.assertEqual(json.loads((directory / "short-candidates.json").read_text())["candidates"], result)
-            self.assertEqual(json.loads((directory / "short-editing-status.json").read_text())["state"], "incomplete")
+            with patch.object(ai, "refine_short", side_effect=AssertionError("No redundant edit")):
+                self.assertEqual(find_shorts(directory, ai, force=True), result)
 
-    def test_visual_callback_reaches_verification_despite_corrupt_late_transcript(self) -> None:
+    def test_text_proposed_callback_keeps_visual_payoff_despite_corrupt_late_transcript(self) -> None:
         class FakeAI:
             mock = True
 
             def shorts(self, _beats: list[dict]) -> list[dict]:
-                return []
+                return self.callback_shorts(_beats, [])
 
             def visual_shorts(self, _frames: list[dict]) -> list[dict]:
                 return []
 
             def callback_shorts(self, _beats: list[dict], _frames: list[dict]) -> list[dict]:
-                return [{"title": "The teammate proves him wrong", "payoff_beat_id": 2,
+                return [{"title": "The teammate proves him wrong", "payoff_beat_id": 15,
                          "proposed_payoff": "The teammate survives while the streamer is dead",
                          "scenes": [{"start_beat_id": 0, "end_beat_id": 0},
                                     {"start_beat_id": 14, "end_beat_id": 14},
-                                    {"start_beat_id": 15, "end_beat_id": 15}]}]
+                                     {"start_beat_id": 14, "end_beat_id": 15}]}]
 
             def verify_short(self, proposal: dict, _beats: list[dict], _frames: list[dict]) -> dict:
                 self.scenes = proposal["scenes"]
@@ -658,7 +664,7 @@ class EditingTests(unittest.TestCase):
             self.assertEqual(len(candidates), 1)
             self.assertEqual(len(candidates[0]["segments"]), 2)
             self.assertEqual(ai.scenes[-1]["start"], 140)
-            self.assertEqual(json.loads((directory / "short-callback-proposals.json").read_text())["callback_version"], 2)
+            self.assertFalse((directory / "short-callback-proposals.json").exists())
             original_verifier = ai.verify_short
             def corrupt_spoken_payoff(proposal, beats, frames):
                 verdict = original_verifier(proposal, beats, frames)
@@ -920,7 +926,7 @@ class EditingTests(unittest.TestCase):
             (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
             (directory / "manifest.json").write_text(json.dumps({"source": str(source), "duration": 200}))
             stat = source.stat()
-            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 20, "evidence_version": 7,
+            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 21, "evidence_version": 7,
                                                                             "cuts_version": 10, "callback_version": 2, "exclusions": [], "game_id": "game-001",
                                                                             "gameplay_start": 100, "editorial_end": 200,
                                                                             "transcript_edits": {"transcript.reviewed.json": None,
@@ -983,7 +989,7 @@ class EditingTests(unittest.TestCase):
             game = {"id": "game-001", "gameplay_start": 10, "gameplay_end": 100}
             (directory / "games.json").write_text(json.dumps({"games": [game]}))
             (directory / "selection.json").write_text(json.dumps({"game_id": "game-001"}))
-            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 20, "evidence_version": 7,
+            (directory / "short-candidates.json").write_text(json.dumps({"version": 8, "output_version": 21, "evidence_version": 7,
                                                                             "cuts_version": 10, "callback_version": 2, "exclusions": [], "game_id": "game-001",
                                                                             "gameplay_start": 10, "editorial_end": 100,
                                                                             "transcript_edits": {"transcript.reviewed.json": None,

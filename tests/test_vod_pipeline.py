@@ -8,10 +8,28 @@ from unittest.mock import patch
 from milloclips.ai import AI
 from milloclips.editing import _check_short_moments, _file_fingerprint, short_candidates, _short_source_words
 from milloclips.io import read_json, write_json
-from milloclips.pipeline import _offset_event, _vod_regions, find_vod_shorts, rank_vod_games
+from milloclips.pipeline import _offset_event, _vod_regions, find_vod_shorts, rank_vod_games, prepare_stream_workspace
 
 
 class VodPipelineTests(unittest.TestCase):
+    def test_stream_promotion_preserves_all_games_and_does_not_overwrite_newer_plans(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            detected = self.workspace(root)
+            directory = root / "game-analyses/game-002"
+            (directory / "renders").mkdir(parents=True)
+            write_json(directory / "beats.json", {"game_id": "game-002", "beats": []})
+            write_json(directory / "long-plan.json", {"story": "cached analysis"})
+            (directory / "renders/long-rough.mp4").write_bytes(b"original upload")
+            self.assertEqual(prepare_stream_workspace(root, directory), root)
+            self.assertEqual(read_json(root / "games.json")["games"], detected)
+            self.assertEqual(read_json(root / "beats.json")["game_id"], "game-002")
+            write_json(root / "long-plan.json", {"story": "new approved edit"})
+            (root / "renders/long-rough.mp4").write_bytes(b"new render")
+            prepare_stream_workspace(root, directory)
+            self.assertEqual(read_json(root / "long-plan.json")["story"], "new approved edit")
+            self.assertEqual((directory / "renders/long-rough.mp4").read_bytes(), b"original upload")
+
     def test_short_cannot_lose_its_payoff_during_boundary_construction(self):
         with self.assertRaisesRegex(ValueError, "payoff"):
             _check_short_moments([{"start": 1612, "end": 1652}], [1613, 1655])
@@ -131,7 +149,7 @@ class VodPipelineTests(unittest.TestCase):
                       "importance": 5, "type": "REACTION", "keep": True, "text": str(index)} for index in range(25)]
             with patch.object(ai, "_json", return_value={"candidates": []}) as request:
                 self.assertEqual(ai.shorts(beats), [])
-                self.assertEqual(request.call_count, 3)
+                self.assertEqual(request.call_count, 1)
                 request.reset_mock()
                 self.assertEqual(ai.shorts(beats), [])
-                self.assertEqual(request.call_count, 1)  # Only the wide callback view remains.
+                self.assertEqual(request.call_count, 0)  # No uncached wide/callback pass.

@@ -4,7 +4,8 @@ Turn Elmiillor Kick VODs into a ~10-minute League of Legends edit, two vertical
 shorts, and an AI-generated thumbnail. Rank every detected game for the long
 edit; discover shorts independently across the whole VOD, including between games.
 For now, shorts are League of Legends moments with meaningful Elmiillor speech;
-slots/other games and silent gameplay are excluded. Complete stories may run up to 90 seconds.
+slots/other games and silent gameplay are excluded. Complete stories may run up to 60 seconds,
+including the outcome and spoken reaction.
 
 For [Elmiillor's AI editor challenge](https://x.com/Elmiillor/status/2100601890383835200),
 use source footage from **September 17–October 1, 2026 inclusive**. Generate one
@@ -32,12 +33,13 @@ uv run milloclips auto https://kick.com/elmiillor/videos/809acd6b-dd4b-4660-b0ee
 ```
 
 `auto` generates the edits and thumbnail without publishing. It prints the path
-to `auto-summary.json`, which lists the outputs. Two directories matter:
+to `auto-summary.json`, which lists the outputs. **One stream has one output directory:**
+`workspace/<vod-id>/renders/` (long video, shorts, thumbnail). Per-game directories
+are internal analysis caches, not upload destinations.
 
 - **VOD workspace:** `workspace/<vod-id>` contains source metadata, scan/ranking,
   `status.json`, and `auto-summary.json`.
-- **Edit workspace:** the summary's **`workspace`** field, usually
-  `workspace/<vod-id>/game-analyses/<game-id>`, contains the outputs to review/upload.
+- **Edit workspace:** the summary's **`workspace`** field is the VOD workspace itself.
 
 To resume after an interruption, rerun `auto` with the VOD workspace:
 
@@ -49,6 +51,23 @@ Matching analysis and renders are reused. `status.json` records a failure's stag
 and error. `--force` refreshes analysis/edit decisions while retaining downloaded
 media, matching transcripts, and unchanged paid image requests.
 
+For the production roles used in the real run, use one command:
+
+```bash
+uv run milloclips auto "workspace/<vod-id>" --model gpt-6-luna --editorial-model gpt-6.1-sol
+```
+
+Text/vision requests are capped at 32 images, terminal quota errors are not retried, and raw
+responses are content-addressed under `requests/`. `usage.jsonl` records timestamps,
+tokens and image counts.
+Image generation has its separate existing reservation budget.
+
+Discovery covers the whole VOD through one cheap text-led path, then reviews at
+most six short stories. The best available material is selected relatively;
+review notes do not impose a minimum entertainment score. Complete payoff bounds,
+source timestamps and the 60-second cap are checked in code. Caption timing and
+reaction tails are finished locally without another paid edit pass.
+
 ## 2. Review the outputs
 
 Open the summary's video, report, and contact-sheet paths. Watch the full long
@@ -56,13 +75,11 @@ video and both shorts; inspect `long-transitions.mp4` for cuts and audio joins.
 Choose the thumbnail/title before uploading:
 
 ```bash
-# Replace this path with auto-summary.json's workspace value.
-EDIT="workspace/<vod-id>/game-analyses/<game-id>"
-uv run milloclips thumbnails "$EDIT" --choose 2
+# The same stream workspace is used for render, review and upload.
+EDIT="workspace/<vod-id>"
 ```
 
-Candidate 1 is provisional by default. `--choose` selects an existing candidate
-without an AI call or image regeneration. For revisions and feedback, see
+One thumbnail is generated per set. For revisions and feedback, see
 `uv run milloclips thumbnails --help`.
 
 ## 3. Upload one reviewed video to YouTube

@@ -15,39 +15,39 @@
       "shorts": [
         {
           "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-01",
-          "title": "En Master, una partida ganada está perdida",
-          "poster": "/images/oct01-fiddle-camille-short-01.jpg",
-          "duration": 18.57,
+          "title": "«Ningún error»… hasta que llega el error",
+          "poster": "/images/oct01-ningun-error-short-01.jpg",
+          "duration": 48.73,
           "width": 1080,
           "height": 1920,
           "video": {
             "provider": "file",
-            "src": "/media/oct01-fiddle-camille-short-01.mp4"
+            "src": "/media/oct01-ningun-error-short-01.mp4"
           }
         },
         {
           "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-02",
-          "title": "Vladimir no escala… ni cuando escala",
-          "poster": "/images/oct01-fiddle-camille-short-02.jpg",
-          "duration": 18.87,
+          "title": "Pensaba que podía tanquear al Shen 0/10",
+          "poster": "/images/oct01-ningun-error-short-02.jpg",
+          "duration": 31.17,
           "width": 1080,
           "height": 1920,
           "video": {
             "provider": "file",
-            "src": "/media/oct01-fiddle-camille-short-02.mp4"
+            "src": "/media/oct01-ningun-error-short-02.mp4"
           }
         }
       ],
       "long": {
         "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-long",
-        "title": "FIDDLE JUNGLA: CAMILLE O NADA",
-        "poster": "/images/oct01-fiddle-camille-thumbnail.png",
-        "duration": 569.9,
+        "title": "NINGÚN ERROR… HASTA QUE LLEGA EL ERROR",
+        "poster": "/images/oct01-ningun-error-thumbnail.png",
+        "duration": 589.1,
         "width": 1280,
         "height": 720,
         "video": {
           "provider": "file",
-          "src": "/media/oct01-fiddle-camille-long.mp4"
+          "src": "/media/oct01-ningun-error-long.mp4"
         }
       }
     },

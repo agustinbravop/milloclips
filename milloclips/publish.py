@@ -89,11 +89,14 @@ def _long_clip(vod_dir: Path, vod: dict, slug: str, title: str, youtube: str | N
     else:
         raise SystemExit("renders/long-rough.mp4 is missing; render the long form or pass --youtube")
     poster = vod_dir / "renders" / "thumbnail.png"
-    if not poster.exists():
-        raise SystemExit("renders/thumbnail.png is missing; run the thumbnail process before publishing")
-    image = static / "images" / f"{slug}-thumbnail.png"
+    image = static / "images" / f"{slug}-thumbnail.png" if poster.exists() else static / "images" / f"{slug}-long.jpg"
     image.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(poster, image)
+    if poster.exists():
+        shutil.copy2(poster, image)
+    elif render.exists():
+        _poster(render, image)
+    else:
+        raise SystemExit("A long render is required to generate its gallery poster")
     if youtube:
         video = {"provider": "youtube", "src": youtube}
     else:
