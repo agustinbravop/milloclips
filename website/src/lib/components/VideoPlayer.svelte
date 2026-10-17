@@ -11,6 +11,15 @@
 
   let playing = $state(false);
   let player = $state<HTMLVideoElement>();
+  const thumbnail = $derived(video.provider === 'youtube' ? `https://i.ytimg.com/vi/${video.src}/maxresdefault.jpg` : poster);
+
+  function fallbackThumbnail(event: Event) {
+    const image = event.currentTarget as HTMLImageElement;
+    if (video.provider === 'youtube' && image.src.endsWith('/maxresdefault.jpg') &&
+        (event.type === 'error' || image.naturalWidth <= 120)) {
+      image.src = `https://i.ytimg.com/vi/${video.src}/hqdefault.jpg`;
+    }
+  }
 
   function play() {
     flushSync(() => (playing = true));
@@ -42,8 +51,8 @@
     onclick={play}
     aria-label={`Reproducir ${title}`}
   >
-    {#if poster}
-      <img src={poster} alt="" loading="lazy" />
+    {#if thumbnail}
+      <img src={thumbnail} alt="" loading="lazy" onload={fallbackThumbnail} onerror={fallbackThumbnail} />
     {:else}
       <span class="filler" aria-hidden="true"></span>
     {/if}
