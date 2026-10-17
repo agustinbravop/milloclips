@@ -57,9 +57,7 @@ test('production shows only YouTube uploads; development preserves local preview
   const before = structuredClone(catalog);
   const publicVods = catalog.vods.map((vod) => visibleVod(vod, false));
   const publicClips = publicVods.flatMap(clips);
-  assert.deepEqual(publicClips.map((clip) => clip.video), [
-    { provider: 'youtube', src: '84psNsciKrw' }
-  ]);
+  assert.deepEqual(publicClips, catalog.vods.flatMap(clips).filter((clip) => clip.video.provider === 'youtube'));
   for (const vod of catalog.vods) {
     assert.deepEqual(visibleVod(vod, true), vod);
     const publicVod = publicVods.find((item) => item.id === vod.id);

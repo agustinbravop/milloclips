@@ -15,26 +15,26 @@
       "shorts": [
         {
           "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-01",
-          "title": "«Ningún error»… hasta que llega el error",
+          "title": "ningún error",
           "poster": "/images/oct01-ningun-error-short-01.jpg",
           "duration": 48.73,
           "width": 1080,
           "height": 1920,
           "video": {
-            "provider": "file",
-            "src": "/media/oct01-ningun-error-short-01.mp4"
+            "provider": "youtube",
+            "src": "6LY2RxhIRo0"
           }
         },
         {
           "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-02",
-          "title": "Pensaba que podía tanquear al Shen 0/10",
+          "title": "Pensaba que podía tanquear al shen 0/10",
           "poster": "/images/oct01-ningun-error-short-02.jpg",
           "duration": 31.17,
           "width": 1080,
           "height": 1920,
           "video": {
-            "provider": "file",
-            "src": "/media/oct01-ningun-error-short-02.mp4"
+            "provider": "youtube",
+            "src": "pcoSHDD3pWg"
           }
         }
       ],

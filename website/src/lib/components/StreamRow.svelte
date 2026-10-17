@@ -68,6 +68,7 @@
 <style>
   .stream {
     padding: clamp(1.3rem, 3vw, 2.2rem) 0;
+    padding-bottom: clamp(0.5rem, 2vw, 0.5rem);
     border-top: 1px solid var(--line);
   }
 
@@ -154,7 +155,7 @@
   .lane {
     display: flex;
     gap: clamp(0.9rem, 2vw, 1.6rem);
-    margin-top: clamp(1.2rem, 3vw, 2rem);
+    margin-top: clamp(0.8rem, 2vw, 1.3rem);
     padding: 2px var(--edge) 1rem 0;
     overflow-x: auto;
     overscroll-behavior-x: contain;
@@ -163,13 +164,13 @@
 
   .clip {
     flex: 0 0 auto;
-    width: clamp(20rem, 46vw, 44rem);
+    width: clamp(21rem, 48.3vw, 46.2rem);
     margin: 0;
     scroll-snap-align: start;
   }
 
   .clip.short {
-    width: clamp(12.5rem, 24vw, 17rem);
+    width: clamp(11.875rem, 22.8vw, 16.15rem);
   }
 
   .screen {
