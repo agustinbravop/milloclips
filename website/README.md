@@ -50,7 +50,23 @@ the Spanish wording, so the data never repeats the same sentence per stream.
 ```
 
 `video.provider` is `file` (public URL to an MP4) or `youtube` (YouTube video
-id). Switching a published video to YouTube is a one-field edit.
+id). Set both `provider: "youtube"` and `src: "<video_id>"` after uploading.
+
+`bun run dev` includes local MP4 previews. Production builds (`bun run build`,
+including `bun run preview`) show only YouTube clips, for both long videos and
+shorts. Counts reflect visible clips; streams with only local edits show
+“Editado, pendiente de publicar en YouTube.” Rebuild after updating the catalog.
+
+## Deployment
+
+Pushes to `main` that change `website/` build `ghcr.io/agustinbravop/milloclips:latest`.
+The image serves the prerendered site with nginx. `website/.dockerignore` excludes
+`static/media/` and all MP4s from the build context, so local videos are never
+uploaded to the image. Local media is also ignored by Git.
+
+The homelab's `apps/milloclips/` and ArgoCD Application/ImageUpdater follow the
+same setup as Roomix Onboarding: GHCR digest updates trigger automatic rollouts
+at <https://milloclips.agusbravo.dev>, with Traefik and cert-manager TLS.
 
 ## Publishing
 

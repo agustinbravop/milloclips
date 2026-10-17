@@ -36,7 +36,8 @@ export interface Vod {
 
 /** Visitor-facing copy for a stream the pipeline has not cut yet. */
 export const PENDING_REASONS = {
-  not_ingested: 'Todavía sin editar: este stream no ha sido procesado.'
+  not_ingested: 'Todavía sin editar: este stream no ha sido procesado.',
+  not_uploaded: 'Editado, pendiente de publicar en YouTube.'
 } as const;
 
 export type PendingReason = keyof typeof PENDING_REASONS;
@@ -50,6 +51,18 @@ export interface CatalogFile {
 /** Clip count decides whether a stream is published or still queued. */
 export function clipCount(vod: Vod): number {
   return (vod.long ? 1 : 0) + vod.shorts.length;
+}
+
+/** Local files are previews; only YouTube uploads are public. */
+export function visibleVod(vod: Vod, includeLocal: boolean): Vod {
+  if (includeLocal) return vod;
+  const visible = {
+    ...vod,
+    long: vod.long?.video.provider === 'youtube' ? vod.long : undefined,
+    shorts: vod.shorts.filter((clip) => clip.video.provider === 'youtube')
+  };
+  if (clipCount(vod) > 0 && clipCount(visible) === 0) visible.pendingReason = 'not_uploaded';
+  return visible;
 }
 
 export function formatDuration(seconds: number): string {

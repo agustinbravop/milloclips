@@ -10,7 +10,7 @@
   } from '$lib/types';
   import VideoPlayer from './VideoPlayer.svelte';
 
-  let { vod, index }: { vod: Vod; index: number } = $props();
+  let { vod, index }: { vod: Vod & { workspaceId: string }; index: number } = $props();
 
   const published = $derived(clipCount(vod) > 0);
   const outputs = $derived([...(vod.long ? [vod.long] : []), ...vod.shorts]);
@@ -21,7 +21,7 @@
     <span class="slot mono">{String(index + 1).padStart(2, '0')}</span>
 
     <div class="what">
-      <h2>{vod.title}</h2>
+      <h2 title={vod.workspaceId}>{vod.title}</h2>
       <p class="links">
         <a href={vod.kickUrl} target="_blank" rel="noreferrer noopener">Ver en Kick &#8599;</a>
         <span class="state mono">

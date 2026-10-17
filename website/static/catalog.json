@@ -1,10 +1,97 @@
 {
-  "generatedAt": "2026-10-01",
+  "generatedAt": "2026-10-17",
   "channel": {
     "name": "ElmilloR",
     "kickUrl": "https://kick.com/elmiillor"
   },
   "vods": [
+    {
+      "id": "2277664e-53ad-5557-aa69-6ac1e5d99463",
+      "title": "1000LP STUCK",
+      "date": "2026-10-01",
+      "startTime": "2026-10-01T18:57:12Z",
+      "duration": 12026,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0f8d3-e740-76d7-847d-c00a0dfe40a4",
+      "shorts": [
+        {
+          "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-01",
+          "title": "En Master, una partida ganada está perdida",
+          "poster": "/images/oct01-fiddle-camille-short-01.jpg",
+          "duration": 18.57,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "file",
+            "src": "/media/oct01-fiddle-camille-short-01.mp4"
+          }
+        },
+        {
+          "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-02",
+          "title": "Vladimir no escala… ni cuando escala",
+          "poster": "/images/oct01-fiddle-camille-short-02.jpg",
+          "duration": 18.87,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "file",
+            "src": "/media/oct01-fiddle-camille-short-02.mp4"
+          }
+        }
+      ],
+      "long": {
+        "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-long",
+        "title": "FIDDLE JUNGLA: CAMILLE O NADA",
+        "poster": "/images/oct01-fiddle-camille-thumbnail.png",
+        "duration": 569.9,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "file",
+          "src": "/media/oct01-fiddle-camille-long.mp4"
+        }
+      }
+    },
+    {
+      "id": "10b65baf-dd99-4139-82ea-804f49ae37c0",
+      "title": "Chill gaming",
+      "date": "2026-09-29",
+      "startTime": "2026-09-29T20:15:32Z",
+      "duration": 14368,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443",
+      "shorts": [],
+      "long": {
+        "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-long",
+        "title": "UDYR CON HOTDOGS FUNCIONA",
+        "poster": "/images/udyr-con-hotdogs-funciona-thumbnail.png",
+        "duration": 645.9,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "youtube",
+          "src": "84psNsciKrw"
+        }
+      }
+    },
+    {
+      "id": "78938968-f0ce-4bdb-b82e-6fd355cf6297",
+      "title": "bo5 nocturno",
+      "date": "2026-09-27",
+      "startTime": "2026-09-27T18:59:40Z",
+      "duration": 9479,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0e43c-b960-7c9b-b158-3205f65fb639",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7",
+      "title": "1000/2300LP NO ME CORTO LA BARBA HASTA C1",
+      "date": "2026-09-25",
+      "startTime": "2026-09-25T11:15:15Z",
+      "duration": 8013,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0d846-d1b8-7b46-b05c-3f67d38a4605",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
     {
       "id": "809acd6b-dd4b-4660-b0ee-746f6398ad8e",
       "title": "ELISE BUFFS | NO ME CORTO LA BARBA HASTA C1",
@@ -53,6 +140,26 @@
       ]
     },
     {
+      "id": "168708cc-824b-44a2-94b8-3cb37df26ae5",
+      "title": "Bo5 y mañana buffs a ELISE | 3.000 de ragalo cada día",
+      "date": "2026-09-22",
+      "startTime": "2026-09-22T18:59:31Z",
+      "duration": 24414,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0ca7c-ca38-723c-89e2-7b760abafb08",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
+      "id": "22f7e438-0d05-4ac7-903d-d08349099a01",
+      "title": "bo5 nocturno y a dormir",
+      "date": "2026-09-20",
+      "startTime": "2026-09-20T19:37:38Z",
+      "duration": 27785,
+      "kickUrl": "https://kick.com/elmiillor/videos/01a0c052-f7d0-7a56-a211-daa0593b04d6",
+      "shorts": [],
+      "pendingReason": "not_ingested"
+    },
+    {
       "id": "f50debc3-9a75-49e2-afb2-a643be4a2691",
       "title": "1000/2400 Día 4 sin cortarme la barba hasta subir a Challenger",
       "date": "2026-09-20",
@@ -72,67 +179,6 @@
         }
       },
       "shorts": []
-    },
-    {
-      "id": "10b65baf-dd99-4139-82ea-804f49ae37c0",
-      "title": "Chill gaming",
-      "date": "2026-09-29",
-      "startTime": "2026-09-29T20:15:32Z",
-      "duration": 14368,
-      "kickUrl": "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443",
-      "shorts": [],
-      "long": {
-        "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-long",
-        "title": "UDYR CON HOTDOGS FUNCIONA",
-        "poster": "/images/udyr-con-hotdogs-funciona-thumbnail.png",
-        "duration": 645.9,
-        "width": 1280,
-        "height": 720,
-        "video": {
-          "provider": "file",
-          "src": "/media/udyr-con-hotdogs-funciona-long.mp4"
-        }
-      }
-    },
-    {
-      "id": "78938968-f0ce-4bdb-b82e-6fd355cf6297",
-      "title": "bo5 nocturno",
-      "date": "2026-09-27",
-      "startTime": "2026-09-27T18:59:40Z",
-      "duration": 9479,
-      "kickUrl": "https://kick.com/elmiillor/videos/01a0e43c-b960-7c9b-b158-3205f65fb639",
-      "shorts": [],
-      "pendingReason": "not_ingested"
-    },
-    {
-      "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7",
-      "title": "1000/2300LP NO ME CORTO LA BARBA HASTA C1",
-      "date": "2026-09-25",
-      "startTime": "2026-09-25T11:15:15Z",
-      "duration": 8013,
-      "kickUrl": "https://kick.com/elmiillor/videos/01a0d846-d1b8-7b46-b05c-3f67d38a4605",
-      "shorts": [],
-      "pendingReason": "not_ingested"
-    },
-    {
-      "id": "168708cc-824b-44a2-94b8-3cb37df26ae5",
-      "title": "Bo5 y mañana buffs a ELISE | 3.000 de ragalo cada día",
-      "date": "2026-09-22",
-      "startTime": "2026-09-22T18:59:31Z",
-      "duration": 24414,
-      "kickUrl": "https://kick.com/elmiillor/videos/01a0ca7c-ca38-723c-89e2-7b760abafb08",
-      "shorts": [],
-      "pendingReason": "not_ingested"
-    },
-    {
-      "id": "22f7e438-0d05-4ac7-903d-d08349099a01",
-      "title": "bo5 nocturno y a dormir",
-      "date": "2026-09-20",
-      "startTime": "2026-09-20T19:37:38Z",
-      "duration": 27785,
-      "kickUrl": "https://kick.com/elmiillor/videos/01a0c052-f7d0-7a56-a211-daa0593b04d6",
-      "shorts": [],
-      "pendingReason": "not_ingested"
     },
     {
       "id": "b27f44fc-c173-48b7-87d9-65ab0bd27886",

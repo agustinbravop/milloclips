@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { visibleVod } from '../src/lib/types.ts';
 
 const catalog = JSON.parse(readFileSync(new URL('../static/catalog.json', import.meta.url), 'utf8'));
 
@@ -43,11 +44,37 @@ test('every clip carries the metadata printed under the player', () => {
 });
 
 test('a queued stream explains why it has no outputs', () => {
-  const known = new Set(['not_ingested']);
+  const known = new Set(['not_ingested', 'not_uploaded']);
   for (const vod of catalog.vods) {
     if (clips(vod).length === 0) {
       assert.ok(vod.pendingReason, `queued stream ${vod.id} needs a reason`);
       assert.ok(known.has(vod.pendingReason), `unknown reason ${vod.pendingReason}`);
     }
   }
+});
+
+test('production shows only YouTube uploads; development preserves local previews', () => {
+  const before = structuredClone(catalog);
+  const publicVods = catalog.vods.map((vod) => visibleVod(vod, false));
+  const publicClips = publicVods.flatMap(clips);
+  assert.deepEqual(publicClips.map((clip) => clip.video), [
+    { provider: 'youtube', src: '84psNsciKrw' }
+  ]);
+  for (const vod of catalog.vods) {
+    assert.deepEqual(visibleVod(vod, true), vod);
+    const publicVod = publicVods.find((item) => item.id === vod.id);
+    if (clips(vod).length > 0 && clips(publicVod).length === 0) {
+      assert.equal(publicVod.pendingReason, 'not_uploaded');
+    }
+  }
+  assert.deepEqual(catalog, before);
+});
+
+test('production filters long videos and shorts independently', () => {
+  const local = catalog.vods.flatMap(clips).find((clip) => clip.video.provider === 'file');
+  const youtube = catalog.vods.flatMap(clips).find((clip) => clip.video.provider === 'youtube');
+  const vod = { ...catalog.vods[0], long: local, shorts: [local, youtube] };
+  const visible = visibleVod(vod, false);
+  assert.equal(visible.long, undefined);
+  assert.deepEqual(visible.shorts, [youtube]);
 });
