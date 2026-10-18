@@ -40,14 +40,14 @@
       ],
       "long": {
         "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-long",
-        "title": "NINGÚN ERROR… HASTA QUE LLEGA EL ERROR",
-        "poster": "/images/oct01-ningun-error-thumbnail.png",
-        "duration": 589.1,
+        "title": "BUSCANDO GANKS CON ELISE",
+        "poster": "/images/oct01-buscando-ganks-thumbnail.png",
+        "duration": 609.3,
         "width": 1280,
         "height": 720,
         "video": {
-          "provider": "file",
-          "src": "/media/oct01-ningun-error-long.mp4"
+          "provider": "youtube",
+          "src": "AQx-fny2mqk"
         }
       }
     },
@@ -79,8 +79,20 @@
       "startTime": "2026-09-27T18:59:40Z",
       "duration": 9479,
       "kickUrl": "https://kick.com/elmiillor/videos/01a0e43c-b960-7c9b-b158-3205f65fb639",
-      "shorts": [],
-      "pendingReason": "not_ingested"
+      "shorts": [
+        {
+          "id": "78938968-f0ce-4bdb-b82e-6fd355cf6297-short-01",
+          "title": "dos horas para que me roben la kill",
+          "poster": "/images/bo5-nocturno-short-01.jpg",
+          "duration": 46.17,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "youtube",
+            "src": "UAzSkdaeGTc"
+          }
+        }
+      ]
     },
     {
       "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7",
