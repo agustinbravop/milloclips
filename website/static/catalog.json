@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-17",
+  "generatedAt": "2026-10-18",
   "channel": {
     "name": "ElmilloR",
     "kickUrl": "https://kick.com/elmiillor"
@@ -126,8 +126,32 @@
       "startTime": "2026-09-25T11:15:15Z",
       "duration": 8013,
       "kickUrl": "https://kick.com/elmiillor/videos/01a0d846-d1b8-7b46-b05c-3f67d38a4605",
-      "shorts": [],
-      "pendingReason": "not_ingested"
+      "long": {
+        "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7-long",
+        "title": "CARREO CON FIDDLESTICKS",
+        "poster": "/images/sep25-carreo-fiddlesticks-thumbnail.png",
+        "duration": 552.4,
+        "width": 1280,
+        "height": 720,
+        "video": {
+          "provider": "youtube",
+          "src": "qCfAZnA5D7U"
+        }
+      },
+      "shorts": [
+        {
+          "id": "6692770e-631b-410b-b8d1-4f0b4585b5e7-short-02",
+          "title": "tryndamere es un champ",
+          "poster": "/images/sep25-tryndamere-short-02.jpg",
+          "duration": 45.23,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "youtube",
+            "src": "U48eq5ZmVF8"
+          }
+        }
+      ]
     },
     {
       "id": "809acd6b-dd4b-4660-b0ee-746f6398ad8e",
@@ -136,30 +160,30 @@
       "startTime": "2026-09-23T19:09:40Z",
       "duration": 14771,
       "kickUrl": "https://kick.com/elmiillor/videos/01a0cfac-7120-7744-86f8-45307de1111c",
-      "thumbnail": "/images/vod-809acd6b.png",
+      "thumbnail": "/images/sep23-fiddle-support-thumbnail.png",
       "long": {
         "id": "809acd6b-long",
-        "title": "Elise Buffs: la partida que se decide con el Baron",
-        "poster": "/images/elise-buffs-thumbnail.png",
-        "duration": 616,
+        "title": "FIDDLE SUPPORT ES UNA LOCURA",
+        "poster": "/images/sep23-fiddle-support-thumbnail.png",
+        "duration": 549.9,
         "width": 1280,
         "height": 720,
         "video": {
-          "provider": "file",
-          "src": "/media/elise-buffs-long.mp4"
+          "provider": "youtube",
+          "src": "ZkswCUdVQ4A"
         }
       },
       "shorts": [
         {
           "id": "809acd6b-short-01",
-          "title": "Estamos trolling",
-          "poster": "/images/elise-buffs-short-01.jpg",
-          "duration": 54,
+          "title": "el graves no puede estar aquí",
+          "poster": "/images/sep23-graves-short-01.jpg",
+          "duration": 47.33,
           "width": 1080,
           "height": 1920,
           "video": {
-            "provider": "file",
-            "src": "/media/elise-buffs-short-01.mp4"
+            "provider": "youtube",
+            "src": "Mw29OTtvATE"
           }
         },
         {

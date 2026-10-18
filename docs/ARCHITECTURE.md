@@ -148,7 +148,8 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
   result/placement, completes dialogue, and retains at least one speech-free second;
   final-result breathing space is exempt from routine downtime trimming.
   If no reviewed `result_end` exists, final-scene inspection may use up to 15 seconds
-  beyond scanner gameplay end, capped by available postgame/source bounds. Only
+  beyond scanner gameplay end, capped by available source bounds. Scanner postgame
+  boundaries do not shorten this inspection window. Only
   this tail is transcribed into `long-ending-transcript.json`; the game transcript
   remains cached. Exit at the first natural pause after the immediate result reaction,
   rather than including renewed post-game review or next-match talk.
@@ -247,6 +248,8 @@ boundary regeneration. Boundary policy v3 preserves media and game transcripts.
 - Vertical output is 1080x1920 with a 680px facecam above 1240px gameplay.
   The default gameplay crop is normalized `[0.22, 0, 0.49, 1]`, biased left to
   retain the champion-stats HUD. Per-VOD explicit crops can override it. Render
+  layouts for whole-VOD shorts come from each candidate's source-region analysis,
+  including regional reviewed crops, rather than the first game's layout. Render
   provenance fingerprints the effective layout, including defaults, so a framing
   change invalidates older renders.
   Both panels scale uniformly to fill and crop overflow without distortion;

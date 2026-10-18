@@ -612,6 +612,8 @@ def _complete_speech_exit(end: float, words: list[dict], region: tuple[float, fl
         pauses = [float(a["end"]) + 0.1 for a, b in zip(words, words[1:])
                   if end <= float(a["end"]) <= region[1] - 0.1
                   and float(b["start"]) - float(a["end"]) >= 0.45]
+        if words and end <= float(words[-1]["end"]) <= region[1] - 0.45:
+            pauses.append(float(words[-1]["end"]) + 0.1)
         if not pauses:
             raise ValueError("Exit cuts a continuing sentence/exchange; more context is needed")
         return pauses[0]
@@ -928,9 +930,8 @@ def _refine_long_scenes(vod_dir: Path, ai: AI, game: dict, beats: list[dict], sc
         scene_bounds = bounds
         scene_words = words
         if (scene.get("final_scene") or scene.get("ending_scene")) and "result_end" not in game:
-            # Scanner gameplay end may precede the result animation; inspect only a bounded tail.
-            context_end = min(manifest["duration"], game.get("postgame_end", cache_key["editorial_end"] + 15),
-                              cache_key["editorial_end"] + 15)
+            # Scanner gameplay/postgame ends may precede the result and spoken reaction.
+            context_end = min(manifest["duration"], cache_key["editorial_end"] + 15)
             if context_end > cache_key["editorial_end"]:
                 tail_path = vod_dir / "long-ending-transcript.json"
                 tail_key = {"audio_start": cache_key["editorial_end"], "audio_end": context_end,
@@ -1098,7 +1099,13 @@ def _refine_long_scenes(vod_dir: Path, ai: AI, game: dict, beats: list[dict], sc
             # stream. Retain the selected complete source window with safe words.
             start, end = _avoid_split_word(max(scene_bounds[0], scene["start"] - 2),
                                           min(scene_bounds[1], scene["end"] + 3), scene_words, scene_bounds)
-            end = _complete_speech_exit(end, scene_words, scene_bounds)
+            try:
+                end = _complete_speech_exit(end, scene_words, scene_bounds)
+            except ValueError as speech_error:
+                # Keep the bounded source for human review when continuous talk has no safe pause.
+                if scene.get("final_scene") or scene.get("ending_scene"):
+                    end = scene_bounds[1]
+                error = ValueError(f"{error}; {speech_error}; retained the source window for review")
             cuts.append({"source_start": origin + start, "source_end": origin + end,
                          "start": start, "end": end, "relative_start": start, "relative_end": end,
                          "scene_id": key, "start_beat_id": scene["start_beat_id"], "end_beat_id": scene["end_beat_id"],
@@ -1973,13 +1980,16 @@ def _extend_short_payoff(candidate: dict, words: list[dict], game_start: float, 
     parts = [dict(part) for part in candidate.get("segments") or [candidate]]
     last = parts[-1]
     target = min(max(last["relative_end"], candidate.get("payoff_end", last["relative_end"]) + 3), limit)
-    _, end = _finish_short_range(last["relative_start"], target, words,
-                                 (last["relative_start"], limit), target)
-    last.update(relative_end=end, source_end=game_start + end)
+    lower = parts[-2]["relative_end"] if len(parts) > 1 else 0
+    start, end = _finish_short_range(last["relative_start"], target, words, (lower, limit), target)
+    last.update(relative_start=start, source_start=game_start + start, relative_end=end, source_end=game_start + end)
+    if "start" in last:
+        last["start"] = start
     if "end" in last:
         last["end"] = end
         last["end_reason"] += "; retained post-event reaction breathing room and complete dialogue"
-    return {**candidate, "segments": parts, "relative_end": end, "source_end": game_start + end,
+    return {**candidate, "segments": parts, "relative_start": parts[0]["relative_start"],
+            "source_start": parts[0]["source_start"], "relative_end": end, "source_end": game_start + end,
             "duration": sum(part["relative_end"] - part["relative_start"] for part in parts)}
 
 
@@ -2468,7 +2478,11 @@ def find_shorts(vod_dir: Path, ai: AI, force: bool = False) -> list[dict]:
         limit = min([limit, *(item["start"] for item in exclusions if item["start"] >= candidate["relative_end"])])
         previous_duration = sum(part["relative_end"] - part["relative_start"] for part in candidate["segments"][:-1])
         limit = min(limit, candidate["segments"][-1]["relative_start"] + SHORT_MAX_SECONDS - previous_duration)
-        finished = _extend_short_payoff(candidate, words, game["gameplay_start"], limit)
+        try:
+            finished = _extend_short_payoff(candidate, words, game["gameplay_start"], limit)
+        except ValueError as error:
+            rejected.append({"title": candidate["title"], "stage": "edit", "reason": str(error)})
+            continue
         if finished["relative_end"] < candidate["payoff_end"] or finished["duration"] > SHORT_MAX_SECONDS:
             rejected.append({"title": candidate["title"], "stage": "edit", "reason": "Complete payoff does not fit 60 seconds"})
             continue
@@ -2744,7 +2758,7 @@ def _subtitle_blocks(words: list[dict], candidate: dict) -> list[dict]:
         if not text:
             continue
         proposed = " ".join([*(str(item["word"]).strip() for item in group), text])
-        if group and (
+        if group and float(word["start"]) > float(group[-1]["start"]) and (
             float(word["start"]) - float(group[-1]["end"]) > 0.65
             or len(group) >= 6
             or len(proposed) > 32
@@ -2756,9 +2770,20 @@ def _subtitle_blocks(words: list[dict], candidate: dict) -> list[dict]:
     return blocks
 
 
-def _short_layout(vod_dir: Path) -> dict:
-    reviewed = vod_dir / "layout.reviewed.json"
-    layout = read_json(reviewed if reviewed.exists() else vod_dir / "layout.json")
+def _short_layout(vod_dir: Path, candidate: dict) -> dict:
+    directory = vod_dir
+    if not (vod_dir / "layout.reviewed.json").exists():
+        raw = read_json(vod_dir / "short-candidates.json")
+        if raw.get("scope") == "vod" or raw.get("game_id") == "vod":
+            evidence = Path(raw["workspace"]) if raw.get("scope") == "vod" else vod_dir
+            for region in read_json(evidence / "beats.json").get("coverage", []):
+                if region["start"] <= candidate["source_start"] < region["end"]:
+                    regional = evidence.parent / "game-analyses" / region["region"]
+                    if (regional / "layout.json").exists() or (regional / "layout.reviewed.json").exists():
+                        directory = regional
+                    break
+    reviewed = directory / "layout.reviewed.json"
+    layout = read_json(reviewed if reviewed.exists() else directory / "layout.json")
     # Bias gameplay left so the champion-stats panel remains inside the crop.
     return {"gameplay": [0.22, 0, 0.49, 1], **layout}
 
@@ -2777,7 +2802,7 @@ def render_short(vod_dir: Path, candidate_index: int = 0) -> Path:
                     if item["render_name"] == render_name), None)
     if already is not None:
         return already
-    layout = _short_layout(vod_dir)
+    layout = _short_layout(vod_dir, candidate)
     subtitles = _write_short_subtitles(vod_dir, {**candidate, "render_name": render_name})
     output = vod_dir / "renders" / f"{render_name}.mp4"
     output.with_suffix(".json").unlink(missing_ok=True)
@@ -2814,10 +2839,10 @@ def validated_short_renders(vod_dir: Path) -> list[dict]:
     manifest = read_json(vod_dir / "manifest.json")
     source = Path(manifest["source"])
     source_stat = source.stat()
-    layout = _short_layout(vod_dir)
     source_identity = {"path": str(source.resolve()), "size": source_stat.st_size, "mtime_ns": source_stat.st_mtime_ns}
     renders = []
     for index, item in enumerate(short_candidates(vod_dir), 1):
+        layout = _short_layout(vod_dir, item)
         render_name = item.get("render_name") or f"short-{item.get('output_number', index):02d}"
         sidecar_path = vod_dir / "renders" / f"{render_name}.json"
         render_path = vod_dir / "renders" / f"{render_name}.mp4"

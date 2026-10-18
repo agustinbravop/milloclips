@@ -94,6 +94,17 @@ class GameRankingTests(unittest.TestCase):
 
 
 class EditingTests(unittest.TestCase):
+    def test_short_reaction_tail_can_retain_a_word_crossing_the_verified_entry(self) -> None:
+        candidate = {"source_start": 110.2, "source_end": 120, "relative_start": 10.2,
+                     "relative_end": 20, "duration": 9.8, "payoff_end": 19}
+        words = [{"word": "tiene", "start": 10, "end": 10.4}]
+        result = _extend_short_payoff(candidate, words, 100, 40)
+        self.assertLessEqual(result["relative_start"], 10)
+        self.assertEqual(result["source_start"], 100 + result["relative_start"])
+        self.assertEqual(result["segments"][0]["relative_start"], result["relative_start"])
+        self.assertEqual(result["relative_end"], 22)
+        self.assertAlmostEqual(result["duration"], result["relative_end"] - result["relative_start"])
+
     def test_short_payoff_keeps_three_seconds_and_finishes_delayed_reaction(self) -> None:
         original = {"source_start": 100, "source_end": 110, "relative_start": 0, "relative_end": 10, "duration": 10}
         words = [{"word": "what", "start": 12.5, "end": 13.2}, {"word": "happened", "start": 13.2, "end": 13.8},
@@ -150,9 +161,14 @@ class EditingTests(unittest.TestCase):
             result = find_shorts(directory, ai)
             self.assertEqual(ai.seen, ["spoken league"])
             self.assertEqual(result[0]["streamer_evidence"]["quote"], "esto no puede salir bien")
+            with patch("milloclips.editing._extend_short_payoff", side_effect=ValueError("Dialogue exceeds 60 seconds")):
+                self.assertEqual(find_shorts(directory, ai, force=True), [])
+            diagnostics = json.loads((directory / "short-diagnostics.json").read_text())
+            self.assertTrue(any("Dialogue exceeds 60 seconds" in item["reason"] for item in diagnostics["rejected"]))
 
     def test_speech_exit_finishes_setup_longer_than_three_seconds(self) -> None:
         words = [{"word": "word", "start": index, "end": index + 0.8} for index in range(8)]
+        self.assertAlmostEqual(_complete_speech_exit(1, words, (0, 10)), 7.9)
         words.append({"word": "next", "start": 9, "end": 9.5})
         self.assertAlmostEqual(_complete_speech_exit(1, words, (0, 10)), 7.9)
 
@@ -857,6 +873,13 @@ class EditingTests(unittest.TestCase):
         self.assertLess(timed[0]["start"], timed[0]["end"])
         self.assertLessEqual(timed[0]["end"], timed[1]["start"])
         self.assertLess(timed[1]["start"], timed[1]["end"])
+
+    def test_subtitles_do_not_split_repeated_timestamps_into_empty_blocks(self) -> None:
+        tokens = "que no puede estar el Graves aquí quien pinguea".split()
+        words = [{"word": token, "start": 10, "end": 10} for token in tokens]
+        blocks = _subtitle_blocks(words, {"relative_start": 9, "relative_end": 15})
+        _validate_caption_blocks(blocks, 6)
+        self.assertEqual(" ".join(block["text"] for block in blocks), " ".join(tokens))
 
     def test_subtitles_keep_words_with_identical_starts_in_one_valid_block(self) -> None:
         words = [

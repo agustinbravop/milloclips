@@ -141,6 +141,9 @@ def plan_artwork(ai: AI, concept: dict, references: list[dict], frame: Path, pho
         'Return JSON {"subject_side":"right","placement_reason":"...","scene":"complete narrative art direction",'
         '"viewer_question":"...","reference_ids":["id"],"asset_positions":[{"x":400,"y":480,"size":160}]}.'
         " Coordinates are integer pixels on 1280x720; sizes 80-220, all assets fully inside canvas. "
+        "Exact safe bounds: 12 <= x <= 1268-size and 12 <= y <= 708-size. "
+        "For icons above y=420, keep x+size <= 670 when subject_side is right, "
+        "or x >= 610 when subject_side is left, so icons cannot obscure the reaction. "
         "One position per supplied exact icon, in supplied order. No positions if there are no icons. "
         "Choose only 1-2 real reference_ids that best fit this concept, not the entire library or placeholders. "
         "First image is gameplay evidence, second the real reaction, "

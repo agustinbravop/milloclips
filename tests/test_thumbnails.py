@@ -17,6 +17,20 @@ from milloclips.thumbnail_art import MODEL, generate_artwork, plan_artwork
 
 
 class ThumbnailTests(unittest.TestCase):
+    def test_single_thumbnail_ignores_legacy_revision_for_a_missing_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "renders" / "thumbnails"
+            output.mkdir(parents=True)
+            image = output / "01-identity.png"
+            Image.new("RGB", (1280, 720), "green").save(image)
+            (output / "revisions.reviewed.json").write_text(json.dumps([
+                {"candidate": 3, "result_row": {"render": str(image)}, "source_digest": "old"}
+            ]))
+            result = _publish_candidates(root, [{"render": str(image), "title": "NEW"}])
+            self.assertEqual(result, image)
+            self.assertTrue((root / "renders" / "thumbnail.png").exists())
+
     def test_reactions_face_inward_and_old_orientation_can_be_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             photo = Path(tmp) / "reaction.png"

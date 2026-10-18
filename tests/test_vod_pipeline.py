@@ -6,12 +6,36 @@ from pathlib import Path
 from unittest.mock import patch
 
 from milloclips.ai import AI
-from milloclips.editing import _check_short_moments, _file_fingerprint, short_candidates, _short_source_words
+from milloclips.editing import _check_short_moments, _file_fingerprint, short_candidates, _short_source_words, _short_layout
 from milloclips.io import read_json, write_json
 from milloclips.pipeline import _offset_event, _vod_regions, find_vod_shorts, rank_vod_games, prepare_stream_workspace
 
 
 class VodPipelineTests(unittest.TestCase):
+    def test_short_layout_follows_source_region_and_preserves_reviewed_overrides(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            evidence = root / "vod-shorts"
+            first = {"facecam": [.7, .05, .25, .25]}
+            second = {"facecam": [.65, .75, .19, .24]}
+            write_json(root / "layout.json", first)
+            write_json(evidence / "layout.json", first)
+            write_json(root / "short-candidates.json", {"scope": "vod", "workspace": str(evidence)})
+            write_json(evidence / "short-candidates.json", {"game_id": "vod"})
+            write_json(evidence / "beats.json", {"coverage": [
+                {"region": "game-001", "start": 0, "end": 100},
+                {"region": "game-002", "start": 100, "end": 200}]})
+            region = root / "game-analyses/game-002"
+            write_json(region / "layout.json", second)
+            candidate = {"source_start": 120}
+            self.assertEqual(_short_layout(root, candidate)["facecam"], second["facecam"])
+            self.assertEqual(_short_layout(evidence, candidate)["facecam"], second["facecam"])
+            self.assertEqual(_short_layout(root, {"source_start": 20})["facecam"], first["facecam"])
+            write_json(region / "layout.reviewed.json", first)
+            self.assertEqual(_short_layout(root, candidate)["facecam"], first["facecam"])
+            write_json(root / "layout.reviewed.json", second)
+            self.assertEqual(_short_layout(root, candidate)["facecam"], second["facecam"])
+
     def test_stream_promotion_preserves_all_games_and_does_not_overwrite_newer_plans(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -397,6 +397,8 @@ def _publish_candidates(vod_dir: Path, rows: list[dict]) -> Path:
         if not result or not Path(result["render"]).exists():
             continue
         index = correction["candidate"] - 1
+        if not 0 <= index < len(rows):
+            continue
         if hashlib.sha256(Path(rows[index]["render"]).read_bytes()).hexdigest() == correction.get("source_digest"):
             rows[index] = dict(result)
     sheet_path = Path(rows[0]["render"])

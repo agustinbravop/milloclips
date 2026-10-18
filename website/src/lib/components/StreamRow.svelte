@@ -170,7 +170,7 @@
   }
 
   .clip.short {
-    width: clamp(11.875rem, 22.8vw, 16.15rem);
+    width: clamp(11.28125rem, 21.66vw, 15.3425rem);
   }
 
   .screen {

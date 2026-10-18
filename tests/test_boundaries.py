@@ -264,7 +264,7 @@ class BoundaryTests(unittest.TestCase):
             (root / "manifest.json").write_text('{"source":"source.mp4","duration":120}')
             (root / "transcript.json").write_text('{"words":[]}')
             ai = AI(root, mock=True)
-            game = {"id": "game", "gameplay_start": 0, "gameplay_end": 100, "postgame_end": 110}
+            game = {"id": "game", "gameplay_start": 0, "gameplay_end": 100, "postgame_end": 100}
             scene = {"start_beat_id": 0, "end_beat_id": 0, "start": 80, "end": 100, "final_scene": True, "purpose": "ending"}
             answer = decision(event(80, 104, action=82, outcome=102, reaction=103, downtime=None))
             with patch("milloclips.editing.sample_boundary_frames", return_value=[]), \
@@ -274,7 +274,7 @@ class BoundaryTests(unittest.TestCase):
                 cuts, _ = _refine_long_scenes(root, ai, game, [{"id": 0, "start": 0, "end": 100}],
                                              [scene], {"editorial_end": 100}, None, False, require_intro_hint=False)
                 self.assertEqual(cuts[-1]["source_end"], 104)
-                self.assertEqual(refine.call_args.args[0]["allowed_region"][1], 110)
+                self.assertEqual(refine.call_args.args[0]["allowed_region"][1], 115)
                 self.assertIn({"word": "fin", "start": 102, "end": 103}, refine.call_args.args[2])
                 _refine_long_scenes(root, ai, game, [{"id": 0, "start": 0, "end": 100}],
                                     [scene], {"editorial_end": 100}, None, False, require_intro_hint=False)
@@ -294,6 +294,22 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual((cuts[0]["source_start"], cuts[0]["source_end"]), (8, 33))
             self.assertTrue(cuts[0]["boundary_note"])
             self.assertTrue(json.loads((root / "long-boundary-review.json").read_text())["notes"])
+
+    def test_unresolved_continuing_speech_does_not_break_source_window_fallback(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "manifest.json").write_text('{"source":"source.mp4","duration":100}')
+            words = [{"word": "hablando", "start": i, "end": i + 0.9} for i in range(20, 100)]
+            (root / "transcript.json").write_text(json.dumps({"words": words}))
+            ai = AI(root, mock=True)
+            with patch("milloclips.editing.sample_boundary_frames", return_value=[]), \
+                    patch.object(ai, "refine_long_scene", return_value={"needs_later_context": True}):
+                cuts, _ = _refine_long_scenes(root, ai, {"id": "game", "gameplay_start": 0},
+                                            [{"id": 0, "start": 0, "end": 100}],
+                                            [{"start_beat_id": 0, "end_beat_id": 0, "start": 10, "end": 30, "final_scene": True}],
+                                            {"editorial_end": 100}, None, False, require_intro_hint=False)
+            self.assertEqual(cuts[0]["source_end"], 100)
+            self.assertIn("continuing sentence", cuts[0]["boundary_note"])
 
     def test_budget_revision_preserves_approved_ranges_and_required_premise(self):
         with TemporaryDirectory() as temporary:
