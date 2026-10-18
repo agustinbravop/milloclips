@@ -1688,7 +1688,7 @@ def render_long(vod_dir: Path) -> Path:
     write_json(vod_dir / "long-plan.json", plan)
     source = Path(manifest["source"])
     sidecar_path = output.with_suffix(".json")
-    provenance = {"render_version": 1, "plan": _fingerprint(plan), "cards": [_media_fingerprint(card) for card in (title, end)],
+    provenance = {"render_version": 5, "plan": _fingerprint(plan), "cards": [_media_fingerprint(card) for card in (title, end)],
                   "source": _source_identity(source)}
     # Resuming a batch must not re-run ffmpeg when the render still matches its plan.
     if output.exists() and sidecar_path.exists():
@@ -1698,13 +1698,15 @@ def render_long(vod_dir: Path) -> Path:
                 and abs(float(sidecar.get("planned_duration", -1)) - plan["duration"]) <= 0.01 \
                 and sidecar.get("width") == 1280 and sidecar.get("height") == 720 and sidecar.get("audio") is True:
             return output
-    render_long_video(source, plan["segments"], plan["cold_open"], title, end, output,
+    pending = output.with_name("long-rough.pending.mp4")
+    render_long_video(source, plan["segments"], plan["cold_open"], title, end, pending,
                        title_duration=plan["title_duration"], end_duration=plan["end_card_duration"],
                        title_transition=plan["title_transition"],
                        title_music=music, title_music_start=TITLE_MUSIC_START, end_music=music, end_music_start=42)
-    info = media_info(output)
+    info = media_info(pending)
     if abs(info["duration"] - plan["duration"]) > 0.5 or not info["audio"] or (info["width"], info["height"]) != (1280, 720):
         raise ValueError("Long render does not match its precise edit plan")
+    pending.replace(output)
     write_json(sidecar_path, {**provenance, "output": _media_fingerprint(output),
                               "planned_duration": plan["duration"], **info})
     render_long_review(vod_dir)
@@ -1737,6 +1739,10 @@ def _long_transitions(plan: dict) -> list[dict]:
                             "incoming_source_start": next_segment["source_start"] if next_segment else None,
                             "entry_reason": next_segment.get("start_reason", "") if next_segment else "Reusable end card",
                             "scene_id": segment.get("scene_id")})
+        if segment.get("reaction_transition"):
+            transitions[-1]["reaction_transition"] = segment["reaction_transition"]
+            if next_segment is not None:
+                transitions[-1]["dissolve_seconds"] = 4 / 30
     return transitions
 
 

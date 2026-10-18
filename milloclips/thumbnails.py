@@ -210,16 +210,23 @@ def _artwork_prompt(concept: dict, direction: dict) -> str:
         "Layer order: cinematic game environment, reaction photo, headline ON TOP. Text may overlap lower torso, "
         "never eyes/mouth; every letter fully visible, no clipping or covering by the person.\n"
         f"Exact headline: {json.dumps(concept['headline'], ensure_ascii=False)}. "
-        "Huge, clean bold type; solid white letters and one restrained accent color. Smooth solid fills: "
-        "NO particles, speckles, cracks, distressing or texture inside letters. "
+        "Huge, stable, bold condensed type with a straight baseline and consistent letter shapes. "
+        "Emphasize through word size, restrained color, clean outlines and modest depth; "
+        "no playful/wobbly fonts, bouncing letters, warped glyphs or curved baselines. "
+        "Controlled game-themed finish, not playful letterforms: subtle gradient, shallow bevel, faint grain/wear; "
+        "keep interiors mostly solid and feed-size readable. No heavy distressing or cracks. "
         "No underlines, red laser streaks, glowing highlight bars or light trails across/beneath text.\n"
+        "At most ONE localized glow or sparse particle effect around the emphasized word; no stacked effects or particle showers.\n"
         "Scene: " + direction["scene"] + "\n"
         "Image 2 is gameplay evidence; following game assets establish the correct subject. "
+        "Strictly match League champions, skins, characters, weapons, monsters and spells to clear supplied references: "
+        "silhouette, anatomy, proportions, colors, clothing, equipment and effect shapes. "
+        "Never redesign from names/memory or extrapolate tiny ambiguous pixels. Omit unreferenced elements. "
         "The LAST image is the original ElmilloR photo, the sole human identity reference. "
         "Use it for facial features, hair, expression and headset, not placement; image 1 sets orientation. "
         "Never blend another creator's face into him. "
         "Use supplied icons faithfully, only once. No invented stats, HUD, extra words or fake achievements. "
-        "Return the finished thumbnail, not a layout board."
+        "Show the champion named in the copy prominently; all elements must reinforce one cohesive promise."
     )
 
 
@@ -231,7 +238,11 @@ def _generated_layout(ai: AI, output: Path, frame: Path, concept: dict, photo: P
     game_path = output / f"game-{hashlib.sha256(game_image.tobytes()).hexdigest()[:16]}.jpg"
     if not game_path.exists():
         game_image.save(game_path, quality=95)
-    direction = plan_artwork(ai, concept, references, game_path, photo, assets, preferences, output)
+    art_reference = None
+    if concept.get("champion", "").isalnum():
+        art_reference = _game_asset(output, "splash", concept["champion"])
+    direction = plan_artwork(ai, concept, references, game_path, photo, assets, preferences, output,
+                             subject_reference=art_reference)
     protected = Image.new("RGBA", SIZE)
     _reaction(protected, photo, direction["subject_side"], framing.get(concept["expression"]))
     for asset, placement in zip(assets, direction["asset_positions"], strict=True):
@@ -243,9 +254,6 @@ def _generated_layout(ai: AI, output: Path, frame: Path, concept: dict, photo: P
     # The finished image includes photo and text; allow the model to integrate both.
     mask = Image.new("RGBA", SIZE, (255, 255, 255, 0))
     mask.save(mask_path)
-    art_reference = None
-    if concept.get("champion", "").isalnum():
-        art_reference = _game_asset(output, "splash", concept["champion"])
     inputs = [template_path, game_path]
     if art_reference:
         inputs.append(art_reference)

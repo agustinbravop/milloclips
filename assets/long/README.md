@@ -30,3 +30,14 @@ the card's final second.
 
 `render-long` creates missing masters once and reuses them for every horizontal
 video. Do not store card masters inside a VOD workspace.
+
+For an occasional reaction-led scene exit, add `reaction_transition` to that
+scene in `long-plan.json`, with an absolute `source_start` and a normalized
+`facecam: [x, y, width, height]` crop from the reviewed layout. It reveals the
+complete camera image centered inside 1120×648 over blurred, darkened gameplay
+in four frames and holds through the existing scene end, without a border.
+A matching four-frame
+dissolve blends the last centered reaction frame into the moving next scene's
+normal layout. Source ranges, audio, and total edit timing stay intact;
+choose the entrance after the action resolves and keep it sparse. Rendering
+uses local media only and the transition reel records the reviewed treatment.

@@ -108,14 +108,16 @@ class ThumbnailTests(unittest.TestCase):
             Image.new("RGB", (960, 540), "gray").save(frame)
             Image.new("RGBA", (64, 64), "green").save(icon)
             Image.new("RGB", (1536, 864), "blue").save(artwork)
-            concept = {"title": "Mi partida", "headline": "QUÉ LOCURA", "expression": "shocked"}
+            concept = {"title": "Mi partida", "headline": "QUÉ LOCURA", "expression": "shocked", "champion": "Fiddlesticks"}
             direction = {"subject_side": "left", "scene": "Dramatic Rift scene", "asset_positions": [{"x": 450, "y": 490, "size": 140}]}
             ai = AI(root, mock=True)
             references = [{"id": str(index), "path": str(frame)} for index in range(3)]
-            with patch("milloclips.thumbnails.plan_artwork", return_value=direction), patch("milloclips.thumbnails.generate_artwork", return_value=artwork) as generate:
+            with patch("milloclips.thumbnails._game_asset", return_value=frame), patch("milloclips.thumbnails.plan_artwork", return_value=direction) as plan, patch("milloclips.thumbnails.generate_artwork", return_value=artwork) as generate:
                 canvas, metadata = _generated_layout(ai, root, frame, concept, photo, [icon], references, 5)
+            self.assertEqual(plan.call_args.kwargs["subject_reference"], frame)
             self.assertEqual(generate.call_count, 1)
-            self.assertEqual(len(generate.call_args.args[3]), 4)
+            self.assertEqual(len(generate.call_args.args[3]), 5)
+            self.assertEqual(generate.call_args.args[3][2], frame)
             self.assertEqual(generate.call_args.args[3][-1], photo)
             self.assertEqual(metadata["reference_ids"], [])
             self.assertLess(len(generate.call_args.args[2]), 2200)
@@ -165,6 +167,27 @@ class ThumbnailTests(unittest.TestCase):
                 plan_artwork(ai, {}, [], image, image, [image], "", root)
             ai._json = lambda *_args, **_kwargs: {"subject_side": "left", "scene": "Rift"}
             self.assertEqual(plan_artwork(ai, {}, [], image, image, [], "", root)["asset_positions"], [])
+
+    def test_reviewed_direction_reuses_raw_call_and_validates_coordinates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "frame.png"
+            Image.new("RGB", (100, 100)).save(image)
+            ai = AI(root, mock=True)
+            raw = {"subject_side": "right", "scene": "Rift", "asset_positions": [{"x": 590, "y": 550, "size": 160}]}
+            ai._json = lambda *_args, **_kwargs: raw
+            with self.assertRaisesRegex(ValueError, "outside its canvas"):
+                plan_artwork(ai, {}, [], image, image, [image], "", root)
+            raw_path = next(root.glob("direction-*.raw.json"))
+            reviewed_path = raw_path.with_name(raw_path.name.replace(".raw.json", ".reviewed.json"))
+            corrected = {**raw, "asset_positions": [{"x": 590, "y": 548, "size": 160}]}
+            reviewed_path.write_text(json.dumps(corrected))
+            with patch.object(ai, "_json", side_effect=AssertionError("Must reuse cached direction")):
+                self.assertEqual(plan_artwork(ai, {}, [], image, image, [image], "", root), corrected)
+                reviewed_path.write_text(json.dumps(raw))
+                with self.assertRaisesRegex(ValueError, "outside its canvas"):
+                    plan_artwork(ai, {}, [], image, image, [image], "", root)
+            self.assertEqual(json.loads(raw_path.read_text()), raw)
 
     def test_reference_thumbnails_are_downloaded_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -311,13 +334,28 @@ class ThumbnailTests(unittest.TestCase):
         ai.vod_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, ai.vod_dir)
         ai._json = lambda *_args, **_kwargs: {"concepts": [{
-            "title": "Unshot en Udyr", "headline": "UNSHOT", "hook": "funny mistake/reversal",
+            "title": "Unshot en Udyr", "headline": "UNSHOT", "hook": "high-stakes/amazing moment",
             "template": "action", "expression": "shocked", "beat_id": 7, "evidence": "one shot",
         }], "reviews": [{"index": 0, "accepted": True, "reason": "Evidenced one-shot elimination."}]}
         beats = [{"id": 7, "type": "COMBAT", "importance": 5,
                   "text": "Oh my god que me dio oneshot", "reason": "Eliminada de un golpe"}]
         concepts = ai.thumbnail_concepts(beats, "Eliminada de un golpe", [])
         self.assertEqual([concept["headline"] for concept in concepts], ["UNSHOT"])
+
+    def test_concepts_accept_champion_gameplay_without_a_standout_play(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ai = AI(Path(tmp))
+            concept = {"title": "Hoy toca Fiddlesticks jungla", "headline": "TOCA FIDEL",
+                       "hook": "champion/gameplay", "template": "identity", "expression": "smiling",
+                       "beat_id": 7, "evidence": "Fiddlesticks jungla", "champion": "Fiddlesticks", "assets": []}
+            beats = [{"id": 7, "type": "FARMING", "importance": 1,
+                      "text": "Hoy toca Fiddlesticks jungla", "reason": "Ordinary gameplay"}]
+            with patch.object(ai, "_json", side_effect=[{"concepts": [concept]}, {
+                "reviews": [{"index": 0, "accepted": True, "reason": "Honest champion-led gameplay"}]
+            }]):
+                result = ai.thumbnail_concepts(beats, "Ordinary jungle game", [])
+            self.assertEqual([item["hook"] for item in result], ["champion/gameplay"])
+            self.assertEqual(result[0]["assets"], [])
 
     def test_concepts_reject_titles_not_grounded_in_their_beat_evidence(self):
         ai = object.__new__(AI)

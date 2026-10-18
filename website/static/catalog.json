@@ -27,7 +27,7 @@
         },
         {
           "id": "2277664e-53ad-5557-aa69-6ac1e5d99463-short-02",
-          "title": "Pensaba que podía tanquear al shen 0/10",
+          "title": "pensaba que podía tanquear al shen 0/10",
           "poster": "/images/oct01-ningun-error-short-02.jpg",
           "duration": 31.17,
           "width": 1080,
@@ -58,7 +58,32 @@
       "startTime": "2026-09-29T20:15:32Z",
       "duration": 14368,
       "kickUrl": "https://kick.com/elmiillor/videos/01a0eece-e6a0-78f3-aaf8-c5743a1d6443",
-      "shorts": [],
+      "shorts": [
+        {
+          "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-short-01",
+          "title": "he cancelado un auto",
+          "poster": "/images/chill-gaming-short-01.jpg",
+          "duration": 29.23,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "youtube",
+            "src": "qdaADuGh6Gs"
+          }
+        },
+        {
+          "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-short-02",
+          "title": "me quiero morir",
+          "poster": "/images/chill-gaming-short-02.jpg",
+          "duration": 27.87,
+          "width": 1080,
+          "height": 1920,
+          "video": {
+            "provider": "youtube",
+            "src": "IAazJ7SEHDc"
+          }
+        }
+      ],
       "long": {
         "id": "10b65baf-dd99-4139-82ea-804f49ae37c0-long",
         "title": "UDYR CON HOTDOGS FUNCIONA",

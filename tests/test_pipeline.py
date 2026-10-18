@@ -308,7 +308,7 @@ class EditingTests(unittest.TestCase):
                         "width": 1280, "height": 720, "audio": True}
 
             with patch("milloclips.editing._long_cards", return_value=cards), \
-                 patch("milloclips.editing.render_long_video") as encode, \
+                 patch("milloclips.editing.render_long_video", side_effect=lambda *args, **kwargs: args[5].write_bytes(b"render")) as encode, \
                  patch("milloclips.editing.media_info", side_effect=measured), \
                  patch("milloclips.editing.render_long_review"):
                 render_long(root)

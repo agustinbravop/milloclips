@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from milloclips.media import _kick_recording_url, media_info, render_long_video, run_ffmpeg, sample_boundary_frames, sample_frames
+from milloclips.media import _kick_recording_url, _reaction_takeover_filters, media_info, render_long_video, run_ffmpeg, sample_boundary_frames, sample_frames
 
 
 class KickRecordingUrlTests(unittest.TestCase):
@@ -44,6 +44,48 @@ class KickRecordingUrlTests(unittest.TestCase):
 
 
 class BoundaryMediaTests(unittest.TestCase):
+    def test_reaction_takeover_is_large_swift_and_resets_without_retiming(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, card, output = root / "source.mp4", root / "card.mp4", root / "reaction.mp4"
+            run_ffmpeg(["-f", "lavfi", "-i", "color=blue:s=1280x720:r=30:d=4,"
+                        "drawbox=x=960:y=540:w=320:h=180:color=red:t=fill,"
+                        "drawbox=color=lime:t=fill:enable='gte(t,3)'", "-f", "lavfi", "-i",
+                        "anullsrc=r=48000:cl=stereo", "-t", "4", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-c:a", "aac", str(source)], capture=True)
+            run_ffmpeg(["-f", "lavfi", "-i", "color=gray:s=1280x720:r=30:d=0.1", "-f", "lavfi", "-i",
+                        "anullsrc=r=48000:cl=stereo", "-t", "0.1", "-c:v", "libx264", "-c:a", "aac", str(card)], capture=True)
+            segment = {"source_start": 0.5, "source_end": 3,
+                       "reaction_transition": {"source_start": 2, "facecam": [0.75, 0.75, 0.25, 0.25]}}
+            with patch("milloclips.media.run_ffmpeg", side_effect=lambda args: run_ffmpeg(args, capture=True)):
+                render_long_video(source, [segment, {"source_start": 3, "source_end": 4}],
+                                  {"source_start": 0, "source_end": 0.5}, card, card, output,
+                                  title_duration=0.1, end_duration=0.1, title_transition=0)
+            self.assertAlmostEqual(media_info(output)["duration"], 4.2, delta=0.05)
+            frames = sample_boundary_frames(output, root / "frames", 1 / 30, start=1.9, end=3.4, width=1280)
+            def pixel(time, position):
+                frame = min(frames, key=lambda frame: abs(frame["timestamp"] - time))
+                with Image.open(frame["path"]) as image:
+                    return image.getpixel(position)
+            self.assertGreater(pixel(1.9, (640, 360))[2], 200)
+            midway = pixel(2.1667, (640, 360))
+            self.assertGreater(midway[0], 30)
+            self.assertGreater(midway[2], 30)
+            self.assertGreater(pixel(2.4, (150, 360))[0], 200)  # Large camera, far beyond the center.
+            self.assertLess(pixel(2.4, (76, 360))[0], 30)  # Background reaches the camera edge without a border.
+            self.assertLess(pixel(2.4, (10, 10))[2], pixel(1.9, (10, 10))[2])
+            self.assertGreater(pixel(3.1, (640, 360))[0], 200)  # Hold the last centered reaction frame.
+            exit_midway = pixel(3.1667, (640, 360))
+            self.assertGreater(exit_midway[0], 30)
+            self.assertGreater(exit_midway[1], 30)
+            self.assertGreater(pixel(3.3, (640, 360))[1], 200)  # Incoming scene's normal layout.
+            segment["reaction_transition"]["source_start"] = 3.1
+            with self.assertRaises(ValueError):
+                _reaction_takeover_filters("scene", segment)
+            segment["reaction_transition"] = {"source_start": 2, "facecam": [0.9, 0.75, 0.25, 0.25]}
+            with self.assertRaises(ValueError):
+                _reaction_takeover_filters("scene", segment)
+
     def test_card_dissolves_blend_frames_and_account_for_each_overlap(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

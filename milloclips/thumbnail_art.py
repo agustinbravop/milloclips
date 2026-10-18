@@ -104,37 +104,54 @@ def generate_artwork(ai: AI, output: Path, prompt: str, images: list[Path], mask
         write_json(ledger_path, ledger)
 
 
-def plan_artwork(ai: AI, concept: dict, references: list[dict], frame: Path, photo: Path, assets: list[Path], preferences: str, output: Path) -> dict:
+def plan_artwork(ai: AI, concept: dict, references: list[dict], frame: Path, photo: Path, assets: list[Path], preferences: str, output: Path, subject_reference: Path | None = None) -> dict:
     instructions = (
-        "Art-direct this evidence-backed ElmilloR League YouTube thumbnail. The thumbnail is a single coherent visual idea, "
-        "not a collage of everything mentioned. A large real-photo reaction is essential. Match emotion to the actual hook. "
+        "Art-direct this evidence-backed ElmilloR League YouTube thumbnail. The thumbnail is a single coherent visual idea."
+        "A large real-photo reaction is essential. Match emotion to the actual hook without overexaggerating. "
         "Prefer subject_side RIGHT. Source photos already face LEFT, so keep them unflipped on the right. "
         "On the left they are mirrored to face RIGHT. Use the left only when this "
-        "specific composition has a strong reason, and explain that in placement_reason. Never turn the person "
+        "specific composition has a reason, and explain that in placement_reason. Never turn the person "
         "outward or invent a new face/pose. Keep main game action in the opposite half. "
         "Headline is topmost and may overlap the lower torso, never eyes/mouth; no letters hidden by the photo. "
         "Relevant exact icons can overlap lower torso, never eyes/mouth. "
-        "Typography is bold and clean: crisp white letters, restrained colored accents, subtle playfulness. "
-        "Solid smooth glyph interiors: NO particles, speckles, cracks or distressed textures. "
-        "Keep subtle supporting light outside the letters. "
-        "Avoid chaotic/aggressive distressing or dominant cartoon type. Do not always use yellow. "
+        "Typography is stable, bold and condensed, with a straight baseline and consistent letter shapes. "
+        "Use word size, restrained color, clean outlines and modest depth for emphasis; no playful/wobbly "
+        "fonts, bouncing letters, individual rotations, warping or curved baselines. "
+        "Controlled game-themed finish, not playful letterforms: subtle gradient, shallow bevel and faint "
+        "grain/worn texture are welcome. Keep interiors mostly solid and readable at feed size; no heavy distressing or cracks. "
+        "Allow at most ONE localized glow or sparse particle effect around an emphasized word, matching the subject; "
+        "keep supporting words cleaner. No stacked effects or particle showers. "
+        "Avoid chaotic/aggressive distressing or dominant cartoon type."
         "Write a concrete 60-90-word scene direction: environment, game subject, camera, light, type and hierarchy. "
         "Use game-faithful cinematic framing or enlarged champion silhouettes on the Rift, or a simple closer Rift "
-        "background with a killer headline. Do not force a champion into every concept. Never recreate another creator. "
+        "background with a killer headline and optional champions in action. Do not force a champion into every concept. Never recreate another creator. "
+        "Title, headline, subject and reaction must deliver ONE cohesive promise. If the copy names a champion, "
+        "show that champion clearly and prominently. Use the supplied official subject artwork when gameplay "
+        "obscures them; do not omit the named subject or replace it with scenery. "
+        "Every League champion, skin, character, weapon, monster and spell must closely match an actual supplied "
+        "visual reference: exact assets or clearly visible gameplay. Preserve silhouette, anatomy, proportions, "
+        "colors, clothing, equipment and spell shapes. Do not design from names or model memory. "
+        "If a monster, spell or other detail is not clearly referenced, omit it and simplify the scene; "
+        "a tiny ambiguous screenshot or another creator's stylization is not a design reference. "
+        "Champion/role/session-led gameplay packaging is valid without an amazing moment; never illustrate a failure "
+        "as the selling point. Standard core items need no spotlight; up to 2-3 exact icons can explain a distinctive build. "
         "No invented damage numbers, kill banners, full builds, or game stats. Artistic champion staging is illustration, "
-        "not evidence that a play occurred. Choose viewer_question and why this title/headline pair deserves a click. "
+        "not evidence that a play occurred. Explain why this title/headline pair deserves a click; "
+        "viewer_question may be empty for honest champion-led gameplay without a specific curiosity gap. "
         'Return JSON {"subject_side":"right","placement_reason":"...","scene":"complete narrative art direction",'
         '"viewer_question":"...","reference_ids":["id"],"asset_positions":[{"x":400,"y":480,"size":160}]}.'
         " Coordinates are integer pixels on 1280x720; sizes 80-220, all assets fully inside canvas. "
         "One position per supplied exact icon, in supplied order. No positions if there are no icons. "
         "Choose only 1-2 real reference_ids that best fit this concept, not the entire library or placeholders. "
-        "First image is gameplay evidence, second the real reaction, then exact icons, then style examples. "
+        "First image is gameplay evidence, second the real reaction, "
+        + ("third the official subject artwork (strict character-design reference), " if subject_reference else "")
+        + "then exact icons, then style examples. "
         "Style examples teach composition only; do not carry their champions, people, text, or stats into this video. "
         "Concept: " + json.dumps(concept, ensure_ascii=False) + "\nChannel/video guidance: " + preferences
         + "\nExact icons: " + json.dumps([path.name for path in assets])
         + "\nStyle examples: " + json.dumps(references, ensure_ascii=False)
     )
-    images = [frame, photo, *assets, *[Path(reference["path"]) for reference in references]]
+    images = [frame, photo, *([subject_reference] if subject_reference else []), *assets, *[Path(reference["path"]) for reference in references]]
     signature = _key({"instructions": instructions, "model": ai.editorial_model, "mock": ai.mock}, images)
     path = output / f"direction-{signature}.raw.json"
     if path.exists():
@@ -142,6 +159,9 @@ def plan_artwork(ai: AI, concept: dict, references: list[dict], frame: Path, pho
     else:
         direction = ai._json(instructions, images, model=ai.editorial_model, detail="high")
         write_json(path, direction)
+    reviewed_path = output / f"direction-{signature}.reviewed.json"
+    if reviewed_path.exists():
+        direction = read_json(reviewed_path)
     if direction.get("subject_side") not in {"left", "right"} or not isinstance(direction.get("scene"), str) or not direction["scene"].strip():
         raise ValueError(f"Invalid thumbnail art direction: {path}")
     positions = direction.get("asset_positions", [])

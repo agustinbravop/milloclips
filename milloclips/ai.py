@@ -21,7 +21,7 @@ STATES = ["OTHER", "QUEUE", "CHAMP_SELECT", "LOADING", "IN_GAME", "POST_GAME"]
 BEAT_TYPES = ["SETUP", "COMBAT", "REACTION", "STRATEGY", "FARMING", "TRAVEL", "SHOPPING", "DEAD", "RESULT"]
 SHORT_MAX_SECONDS = 60
 MAX_REQUEST_IMAGES = 32
-THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal"}
+THUMBNAIL_HOOKS = {"high-stakes/amazing moment", "unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "champion/gameplay"}
 THUMBNAIL_FILLER = {"a", "al", "como", "con", "de", "el", "en", "es", "esto", "fucking", "fck", "jugué", "jugue", "la", "locura", "me", "mi", "mí", "mira", "momento", "muy", "para", "pick", "que", "rarísimo", "si", "un", "una", "va", "volando", "yo", "he", "ha", "lo", "los", "las", "este", "esta", "esto", "qué", "pero", "y"}
 THUMBNAIL_ACTOR = {"jugué", "jugue", "jugando", "me", "mi", "mí", "mío", "mio", "yo"}
 
@@ -591,30 +591,43 @@ continuous fight or its outcome; use transcript/context for preliminary labels.
 Create exactly ONE strong Spanish YouTube title/thumbnail concept for this FINAL League edit.
 Think punchy League creator packaging: expressive streamer face, one dominant game subject,
 very short readable copy. Choose the strongest hook from this video's evidence.
+Never package a failed play, lost objective, misplay or other downer as the hook, even if funny.
+If no genuinely outstanding positive moment exists, choose honest champion/role/session-led
+gameplay packaging with hook "champion/gameplay" and template "identity". A standard gameplay
+video is a valid concept: no amazing-play claim or manufactured curiosity gap is required.
+Deliver one cohesive promise across title, headline, visible game subject and reaction.
+When copy names a champion, make that champion the recognizable visual subject, not just scenery.
 Each becomes a Sunburst-generated composition with an exact real reaction photo and optional exact icons.
 Think cinematically staged, game-faithful Rift/character artwork, a relevant build or statistic,
 or a simpler close-perspective Rift backdrop and exceptionally strong headline. No mandatory slots.
 Use reference examples for visual language, never copy their content or people's faces.
+League champions, skins, spells, monsters and equipment must closely match supplied
+official assets or clearly visible gameplay references. Do not require extra entities or
+spell effects that lack clear visual references; prefer a simpler referenced composition.
 Headlines must be natural Spanish, never keyword soup.
-Name the hook's concrete subject, mechanic or consequence. Reject interchangeable labels like
+Name the champion, role, session theme or genuine positive hook. Reject interchangeable labels like
 ELECCIÓN INSÓLITA, PICK RARO or QUÉ LOCURA; they do not tell viewers what is special about this video.
 Write titles as something a Spanish-speaking League creator would actually say, not compressed
 keywords. Prefer plain, direct language over clever phrasing. Before returning, read the title and
 headline aloud mentally and fix unnatural grammar or word combinations. Ground both in this video.
 Package a reason to watch, not merely a label for a mechanic or lesson. First-person copy is optional: the face already identifies
-ElmilloR. The title and thumbnail headline must work together to raise a specific viewer question.
+ElmilloR. The title and headline should offer an appealing, honest reason to watch; a champion-led
+gameplay concept need not raise a specific viewer question.
 Create curiosity through a concrete statement, not default question copy. Video titles are FULL CAPS,
 more descriptive than the 2-4-word thumbnail headline, with relevant action/pick/role/build/stakes.
 Use Thebausffs/Nemesis-style directness, with some Drututt influence; do not repeat the headline.
 Identify the relevant champion from each concept's evidence. Do not require all three to feature
 the same champion. A teammate's play is not ElmilloR's achievement. Images match evidence list order.
 Include a canonical Riot champion asset name only when identified and relevant; never invent it.
-Optional assets: up to six objects {"kind":"item"|"rune","key":"numeric Riot ID"}.
+Optional assets: up to three objects {"kind":"item"|"rune","key":"numeric Riot ID"}.
 Only request an icon when the supplied evidence establishes that exact item/rune;
 omit uncertain IDs. Do not add unrelated icons as decoration.
 Include the exact evidenced item/rune icon when it is the defining reason the hook works.
+Two or three icons can explain a genuinely unusual build/synergy. Routine core items are not
+hooks: omit their names and icons from ordinary champion-led packaging. Fiddlesticks with
+Protobelt is standard; Fiddlesticks support with Zeke's can be distinctive when evidenced.
 For hook, use EXACTLY one of these strings: "high-stakes/amazing moment",
-"unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "funny mistake/reversal".
+"unusual pick/role/challenge", "bold claim/strategy", "extremely good performance", "champion/gameplay".
 A strategy can claim it works only when the evidence proves its payoff. Do not turn a hypothetical
 ("podría", "casi", "si") into an achieved result. Headlines are 2-4 Spanish words, all-caps-friendly,
 punchy editorial paraphrases. Claims must be supported by the cited evidence, but natural Spanish
@@ -626,7 +639,7 @@ hooks and normal excitement. Questioning copy needs curiosity or skepticism, nev
 Reserve overly-hyped for RARE, genuinely extreme emotional peaks:
 ordinary wins or strong plays are not enough. Explain the exceptional evidence and why smiling
 would undersell it if selecting overly-hyped. Still use shock or skepticism when the actual hook
-calls for them; do not force smiles onto disasters. Cite a supplied beat_id. Return JSON only:
+calls for them; choose a different concept rather than packaging a disaster. Cite a supplied beat_id. Return JSON only:
 Each concept must include evidence: an exact short phrase copied from its cited beat's spoken text.
 If a supplied beat cannot support a concise truthful concept, omit it rather than guessing.
 Each concept MUST include a nonempty reaction_reason explaining the chosen photo's emotional fit
@@ -668,7 +681,9 @@ headline (at most 40 characters), and an exact evidence quote from their cited b
             "Audit the single proposed League thumbnail concept against supplied evidence. Natural Spanish "
             "paraphrases are allowed; reject unsupported entities, outcomes, teammate plays attributed to ElmilloR, "
             "unnatural copy, unsupported assets, hypothetical claims presented as achieved, and emotionally "
-            "misleading reaction photos. Return JSON {\"reviews\":[{\"index\":0,\"accepted\":true,\"reason\":\"...\"}]}. "
+            "misleading reaction photos. Reject failure/downer-led hooks and routine core items promoted as unusual builds. "
+            "Accept honest champion/role/session-led gameplay concepts without an amazing moment or curiosity gap. "
+            "Return JSON {\"reviews\":[{\"index\":0,\"accepted\":true,\"reason\":\"...\"}]}. "
             "Concepts: " + json.dumps(parsed.get("concepts", []), ensure_ascii=False)
             + " Evidence: " + json.dumps(evidence, ensure_ascii=False)
             + " Preferences: " + preferences + " Reaction-photo catalog: " + json.dumps(reactions or [], ensure_ascii=False),

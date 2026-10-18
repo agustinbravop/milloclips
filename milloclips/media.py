@@ -289,6 +289,32 @@ def _segment_input(source: Path, segment: dict) -> tuple[list[str], float, float
     return ["-ss", str(seek), "-t", str(end - seek + 1), "-i", str(source)], start - seek, end - seek
 
 
+def _reaction_takeover_filters(label: str, segment: dict) -> list[str]:
+    """Reveal a centered facecam in four frames over obscured gameplay."""
+    reaction = segment["reaction_transition"]
+    start = reaction["source_start"] - segment["source_start"]
+    length = segment["source_end"] - segment["source_start"]
+    box = reaction["facecam"]
+    if (not math.isfinite(start) or not 0 <= start < length - 4 / 30
+            or len(box) != 4 or not all(math.isfinite(value) for value in box)):
+        raise ValueError("Reaction transition must fit inside its scene and use a finite facecam crop")
+    x, y, width, height = box
+    if not (0 <= x < x + width <= 1 and 0 <= y < y + height <= 1):
+        raise ValueError("Reaction facecam crop must fit inside the picture")
+    # Fit the complete camera image inside an almost-full-screen 1120x648 panel.
+    crop = [2 * round(value / 2) for value in (1280 * width, 720 * height, 1280 * x, 720 * y)]
+    weight = f"clip((T-{start})/{4 / 30},0,1)"
+    return [
+        f"[{label}]split=3[{label}clean][{label}bg][{label}face]",
+        f"[{label}bg]gblur=sigma=22:enable='gte(t,{start})',"
+        f"eq=brightness=-0.14:enable='gte(t,{start})'[{label}blur]",
+        f"[{label}face]crop={':'.join(map(str, crop))},"
+        f"scale=1120:648:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos[{label}large]",
+        f"[{label}blur][{label}large]overlay=x=(W-w)/2:y=(H-h)/2:enable='gte(t,{start})'[{label}takeover]",
+        f"[{label}clean][{label}takeover]blend=all_expr='A*(1-({weight}))+B*({weight})'[{label}reaction]",
+    ]
+
+
 def render_long_video(
     source: Path,
     segments: list[dict],
@@ -329,10 +355,31 @@ def render_long_video(
     seeks = [_segment_input(source, part) for part in source_parts]
     chains: list[str] = []
     for index, (_arguments, left, right) in enumerate(seeks):
+        label = f"scene{index}" if source_parts[index].get("reaction_transition") else f"v{index}"
         chains.extend((
-            f"[{index}:v]trim=start={left}:end={right},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,settb=AVTB[v{index}]",
+            f"[{index}:v]trim=start={left}:end={right},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,settb=AVTB[{label}]",
             f"[{index}:a]atrim=start={left}:end={right},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo[a{index}]",
         ))
+        if source_parts[index].get("reaction_transition"):
+            chains.extend(_reaction_takeover_filters(label, source_parts[index]))
+            chains.append(f"[{label}reaction]null[v{index}]")
+    video_labels = [f"v{index}" for index in range(len(source_parts))]
+    for index, part in enumerate(source_parts[:-1]):
+        if not part.get("reaction_transition"):
+            continue
+        # Hold only the last reaction frame during the incoming scene's first four
+        # frames. This reverses the entrance blend without moving any video/audio cuts.
+        tail_start = max(0, part["source_end"] - part["source_start"] - 0.1)
+        weight = f"clip(T/{4 / 30},0,1)"
+        chains.extend((
+            f"[{video_labels[index]}]split=2[exit{index}][tail{index}]",
+            f"[tail{index}]trim=start={tail_start},reverse,trim=end_frame=1,setpts=PTS-STARTPTS,fps=30,"
+            f"tpad=stop_mode=clone:stop_duration={4 / 30},settb=AVTB[hold{index}]",
+            f"[{video_labels[index + 1]}][hold{index}]blend=all_expr='A*({weight})+B*(1-({weight}))':"
+            f"eof_action=pass:repeatlast=0[entry{index + 1}]",
+        ))
+        video_labels[index] = f"exit{index}"
+        video_labels[index + 1] = f"entry{index + 1}"
     title_input = len(source_parts)
     end_input = title_input + 1
     chains.extend((
@@ -341,9 +388,9 @@ def render_long_video(
         f"[{end_input}:v]trim=duration={end_duration},setpts=PTS-STARTPTS,setsar=1,fps=30,settb=AVTB[endv]",
         f"[{end_input}:a]atrim=duration={end_duration - title_transition},asetpts=PTS-STARTPTS,aformat=sample_rates=48000:channel_layouts=stereo,volume=0[enda]",
     ))
-    intro_v, intro_a = "v0", "a0"
+    intro_v, intro_a = video_labels[0], "a0"
     if len(intro_parts) > 1:
-        chains.append(f"{''.join(f'[v{index}][a{index}]' for index in range(len(intro_parts)))}"
+        chains.append(f"{''.join(f'[{video_labels[index]}][a{index}]' for index in range(len(intro_parts)))}"
                       f"concat=n={len(intro_parts)}:v=1:a=1[preface][prefacea]")
         chains.append("[preface]fps=30,settb=AVTB[prefacev]")
         intro_v, intro_a = "prefacev", "prefacea"
@@ -351,13 +398,13 @@ def render_long_video(
         chains.extend((f"[{intro_v}][titlev]xfade=transition=fade:duration={title_transition}:offset={card_start}[introv]",
                        f"[{intro_a}][titlea]concat=n=2:v=0:a=1[introa]"))
         first = len(intro_parts)
-        chains.extend((f"[introv][v{first}]xfade=transition=fade:duration={title_transition}:"
+        chains.extend((f"[introv][{video_labels[first]}]xfade=transition=fade:duration={title_transition}:"
                        f"offset={card_start + title_duration - title_transition}[openingv]",
                        f"[introa][a{first}]concat=n=2:v=0:a=1[openinga]"))
         ordered = ["[openingv][openinga]"]
     else:
         ordered = [f"[{intro_v}][{intro_a}]", "[titlev][titlea]"]
-    ordered += [f"[v{index}][a{index}]" for index in range(len(intro_parts) + bool(title_transition), len(source_parts))]
+    ordered += [f"[{video_labels[index]}][a{index}]" for index in range(len(intro_parts) + bool(title_transition), len(source_parts))]
     if title_transition:
         chains.extend((f"{''.join(ordered)}concat=n={len(ordered)}:v=1:a=1[bodyv][bodya]",
                        "[bodyv]fps=30,settb=AVTB[bodyclock]",
